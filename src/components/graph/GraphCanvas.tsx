@@ -1,0 +1,759 @@
+"use client";
+
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  ReactFlow,
+  ReactFlowProvider,
+  Background,
+  BackgroundVariant,
+  Controls,
+  useNodesState,
+  useEdgesState,
+  useReactFlow,
+  type Node,
+  type Edge,
+  type NodeMouseHandler,
+} from "@xyflow/react";
+import dagre from "dagre";
+import "@xyflow/react/dist/style.css";
+import SourceNode from "./nodes/SourceNode";
+import QuestionNode from "./nodes/QuestionNode";
+import KnowledgeCardNode from "./nodes/KnowledgeCardNode";
+import ClusterNode from "./nodes/ClusterNode";
+import AreaNode from "./nodes/AreaNode";
+import FloatingEdge from "./FloatingEdge";
+import type { Space, Source, Question, KnowledgeCard, SelectedNode } from "@/lib/types";
+import { extractVideoId } from "@/lib/youtube";
+import { colorForSpaceIndex } from "@/lib/colors";
+
+const nodeTypes = {
+  source: SourceNode,
+  question: QuestionNode,
+  card: KnowledgeCardNode,
+  cluster: ClusterNode,
+  area: AreaNode,
+};
+
+interface AreaData {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  label: string;
+}
+
+const edgeTypes = {
+  floating: FloatingEdge,
+};
+
+interface PendingDelete {
+  nodeType: "source" | "question" | "card";
+  id: string;
+  label: string;
+}
+
+interface Props {
+  level: 1 | 2 | 3;
+  spaces: Space[];
+  sources: Source[];
+  // Level 3 only:
+  source?: Source | null;
+  questions?: Question[];
+  cards?: KnowledgeCard[];
+  selectedNode: SelectedNode | null;
+  onSelectNode: (node: SelectedNode) => void;
+  onSelectSpace: (spaceId: string) => void;
+  onSelectSource: (source: Source) => void;
+  onOpenViewer: () => void;
+  onGraphRefresh: () => void;
+}
+
+// Layout sizes — keep source the same size at L3 as it is in clusters (L1) so the
+// L1→L3 transition is pure camera motion, no visible card resize.
+const SRC_W = 180, SRC_H = 180;
+const SRC_COMPACT_W = 180, SRC_COMPACT_H = 180;
+const Q_W = 165, Q_H = 80;
+const CLUSTER_PADDING_X = 36;
+const CLUSTER_PADDING_TOP = 78;
+const CLUSTER_PADDING_BOTTOM = 36;
+
+// Zoom level at which the L1 zoom-in animation ends and the L3 view starts.
+// Lower = source appears smaller; reduces perceived "pop" during the level switch.
+const DRILL_IN_ZOOM = 1.3;
+// Max zoom that fitView will settle to in L3, so the user can see context (questions/cards)
+// rather than being parked too close to the source.
+const L3_MAX_ZOOM = 0.75;
+
+function layoutLevel3(source: Source, questions: Question[], cards: KnowledgeCard[]): { nodes: Node[]; edges: Edge[] } {
+  const questionIds = new Set(questions.map((q) => q.id));
+  const validCards = cards.filter((c) => questionIds.has(c.questionId));
+
+  const g = new dagre.graphlib.Graph();
+  g.setDefaultEdgeLabel(() => ({}));
+  g.setGraph({ rankdir: "TB", ranksep: 100, nodesep: 60 });
+
+  g.setNode(`source-${source.id}`, { width: SRC_W, height: SRC_H });
+  questions.forEach((q) => g.setNode(`question-${q.id}`, { width: Q_W, height: Q_H }));
+  validCards.forEach((c) => g.setNode(`card-${c.id}`, { width: Q_W, height: Q_H }));
+  questions.forEach((q) => g.setEdge(`source-${source.id}`, `question-${q.id}`));
+  validCards.forEach((c) => g.setEdge(`question-${c.questionId}`, `card-${c.id}`));
+  dagre.layout(g);
+
+  // Translate the whole layout so that the source node's CENTER is at world (0, 0).
+  // This makes camera positioning deterministic for the L1/L2 → L3 transition.
+  const srcDagre = g.node(`source-${source.id}`);
+  const offsetX = srcDagre.x;
+  const offsetY = srcDagre.y;
+
+  const pos = (id: string, w: number, h: number) => {
+    const n = g.node(id);
+    return { x: n.x - offsetX - w / 2, y: n.y - offsetY - h / 2 };
+  };
+
+  return {
+    nodes: [
+      {
+        id: `source-${source.id}`,
+        type: "source",
+        position: pos(`source-${source.id}`, SRC_W, SRC_H),
+        // `compact: true` keeps the same card dimensions as the L1 cluster card,
+        // so the transition between levels is pure camera motion (no card resize).
+        data: { showHandle: questions.length > 0, compact: true },
+      },
+      ...questions.map((q) => ({
+        id: `question-${q.id}`,
+        type: "question" as const,
+        position: pos(`question-${q.id}`, Q_W, Q_H),
+        data: {},
+      })),
+      ...validCards.map((c) => ({
+        id: `card-${c.id}`,
+        type: "card" as const,
+        position: pos(`card-${c.id}`, Q_W, Q_H),
+        data: {},
+      })),
+    ],
+    edges: [
+      ...questions.map((q) => ({
+        id: `e-src-${q.id}`,
+        source: `source-${source.id}`,
+        target: `question-${q.id}`,
+        type: "floating",
+        style: { stroke: "#C4B8A0", strokeWidth: 1.5 },
+      })),
+      ...validCards.map((c) => ({
+        id: `e-q-${c.id}`,
+        source: `question-${c.questionId}`,
+        target: `card-${c.id}`,
+        type: "floating",
+        style: { stroke: "#A8C4A5", strokeWidth: 1.5 },
+      })),
+    ],
+  };
+}
+
+function layoutLevel2(sources: Source[]): { nodes: Node[]; edges: Edge[] } {
+  // Simple grid layout, 3 columns
+  const cols = 3;
+  const colGap = 60;
+  const rowGap = 50;
+  const nodes: Node[] = sources.map((s, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    return {
+      id: `source-${s.id}`,
+      type: "source",
+      position: { x: col * (SRC_W + colGap), y: row * (SRC_H + rowGap) },
+      data: {},
+    };
+  });
+  return { nodes, edges: [] };
+}
+
+function layoutLevel1(spaces: Space[], sources: Source[]): { nodes: Node[]; edges: Edge[] } {
+  // Group sources by spaceId; ungrouped sources have spaceId === null
+  const bySpace: Record<string, Source[]> = {};
+  const ungrouped: Source[] = [];
+  for (const s of sources) {
+    if (s.spaceId) {
+      bySpace[s.spaceId] = bySpace[s.spaceId] || [];
+      bySpace[s.spaceId].push(s);
+    } else {
+      ungrouped.push(s);
+    }
+  }
+
+  // For each space, lay out its sources internally in a grid
+  const innerCols = 2;
+  const innerColGap = 24;
+  const innerRowGap = 22;
+
+  type Cluster = {
+    space: Space;
+    spaceIndex: number;
+    sources: Source[];
+    width: number;
+    height: number;
+    innerPositions: { x: number; y: number }[]; // relative to cluster origin (inside padding)
+  };
+
+  const clusters: Cluster[] = spaces
+    .map((space, i) => ({ space, i }))
+    .filter(({ space }) => (bySpace[space.id]?.length ?? 0) > 0)
+    .map(({ space, i }) => {
+      const ss = bySpace[space.id];
+      const colsUsed = Math.min(innerCols, ss.length);
+      const positions: { x: number; y: number }[] = ss.map((_, idx) => {
+        const col = idx % innerCols;
+        const row = Math.floor(idx / innerCols);
+        return {
+          x: CLUSTER_PADDING_X + col * (SRC_COMPACT_W + innerColGap),
+          y: CLUSTER_PADDING_TOP + row * (SRC_COMPACT_H + innerRowGap),
+        };
+      });
+      const rowsUsed = Math.ceil(ss.length / innerCols);
+      const width = CLUSTER_PADDING_X * 2 + colsUsed * SRC_COMPACT_W + (colsUsed - 1) * innerColGap;
+      const height =
+        CLUSTER_PADDING_TOP + CLUSTER_PADDING_BOTTOM +
+        rowsUsed * SRC_COMPACT_H + (rowsUsed - 1) * innerRowGap;
+      return { space, spaceIndex: i, sources: ss, width, height, innerPositions: positions };
+    });
+
+  // Lay clusters out in rows that fit a target width
+  const targetRowWidth = 1400;
+  const clusterRowGap = 60;
+  const clusterColGap = 60;
+
+  const placedClusters: { cluster: Cluster; x: number; y: number }[] = [];
+  let curX = 0;
+  let curY = 0;
+  let curRowH = 0;
+  for (const c of clusters) {
+    if (curX + c.width > targetRowWidth && curX > 0) {
+      curX = 0;
+      curY += curRowH + clusterRowGap;
+      curRowH = 0;
+    }
+    placedClusters.push({ cluster: c, x: curX, y: curY });
+    curX += c.width + clusterColGap;
+    curRowH = Math.max(curRowH, c.height);
+  }
+  const ungroupedRowY = curY + curRowH + (placedClusters.length > 0 ? clusterRowGap : 0);
+
+  const nodes: Node[] = [];
+
+  // Cluster parents first (xyflow requirement)
+  for (const { cluster, x, y } of placedClusters) {
+    nodes.push({
+      id: `cluster-${cluster.space.id}`,
+      type: "cluster",
+      position: { x, y },
+      data: {
+        label: cluster.space.name,
+        count: cluster.sources.length,
+        color: colorForSpaceIndex(cluster.spaceIndex),
+        spaceId: cluster.space.id,
+      },
+      style: { width: cluster.width, height: cluster.height },
+      selectable: false,
+      draggable: false,
+    });
+  }
+
+  // Children
+  for (const { cluster } of placedClusters) {
+    cluster.sources.forEach((s, idx) => {
+      const p = cluster.innerPositions[idx];
+      nodes.push({
+        id: `source-${s.id}`,
+        type: "source",
+        parentId: `cluster-${cluster.space.id}`,
+        extent: "parent",
+        position: p,
+        data: { compact: true },
+        draggable: false,
+      });
+    });
+  }
+
+  // Ungrouped sources (no space)
+  ungrouped.forEach((s, i) => {
+    const col = i % innerCols;
+    const row = Math.floor(i / innerCols);
+    nodes.push({
+      id: `source-${s.id}`,
+      type: "source",
+      position: {
+        x: col * (SRC_COMPACT_W + innerColGap),
+        y: ungroupedRowY + row * (SRC_COMPACT_H + innerRowGap),
+      },
+      data: { compact: true },
+      draggable: false,
+    });
+  });
+
+  return { nodes, edges: [] };
+}
+
+export default function GraphCanvas(props: Props) {
+  // Re-mount the provider tree on every level/source change so xyflow's internal viewport
+  // state resets cleanly; otherwise the previous viewport leaks into the new layout.
+  const remountKey = `L${props.level}-${props.source?.id ?? "all"}`;
+  return (
+    <ReactFlowProvider key={remountKey}>
+      <div style={{ width: "100%", height: "100%", position: "relative" }}>
+        <GraphCanvasInner {...props} />
+      </div>
+    </ReactFlowProvider>
+  );
+}
+
+// At L3, the source is normalized to world (0,0). We pre-compute the viewport so that
+// world (0,0) lands at the screen center at zoom 1.6 on the very first paint — eliminating
+// the "default viewport flash" before useLayoutEffect runs.
+function computeDefaultViewport(level: 1 | 2 | 3): { x: number; y: number; zoom: number } | undefined {
+  if (level !== 3 || typeof window === "undefined") return undefined;
+  // Approximate the graph container size for the first-paint viewport. The right panel
+  // width is constant (see RightPanel.tsx) so this estimate is stable across all levels.
+  const w = window.innerWidth - 240 /* sidebar */ - 380 /* right panel */;
+  const h = window.innerHeight - 44 /* header */;
+  return { x: w / 2, y: h / 2, zoom: DRILL_IN_ZOOM };
+}
+
+function GraphCanvasInner({
+  level, spaces, sources, source, questions = [], cards = [],
+  selectedNode, onSelectNode, onSelectSpace, onSelectSource, onOpenViewer, onGraphRefresh,
+}: Props) {
+  const reactFlow = useReactFlow();
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  // While zooming into a source, fade out everything except the clicked node.
+  const [zoomingIntoId, setZoomingIntoId] = useState<string | null>(null);
+  // Tracks whether the initial camera-fit has run for this mount.
+  const didInitCameraRef = useRef(false);
+
+  // Persist user-dragged node positions + custom areas.
+  // L3 (a source's graph) is saved to the DB on the source row so it syncs across devices.
+  // L2 (sources within a space) falls back to localStorage (per-device, positions only).
+  const posKey =
+    level === 2 ? `kh.pos.space.${sources[0]?.spaceId ?? "root"}` : null;
+
+  // Returns { positions, areas }. Handles the legacy format where graphLayout was a bare
+  // positions map (no `positions`/`areas` keys).
+  const loadLayout = useCallback((): { positions: Record<string, { x: number; y: number }>; areas: AreaData[] } => {
+    if (level === 3 && source?.graphLayout) {
+      try {
+        const parsed = JSON.parse(source.graphLayout);
+        if (parsed && (parsed.positions || parsed.areas)) {
+          return { positions: parsed.positions ?? {}, areas: parsed.areas ?? [] };
+        }
+        return { positions: parsed ?? {}, areas: [] }; // legacy: whole object is the positions map
+      } catch { return { positions: {}, areas: [] }; }
+    }
+    if (posKey) {
+      try {
+        const raw = window.localStorage.getItem(posKey);
+        return { positions: raw ? JSON.parse(raw) : {}, areas: [] };
+      } catch { return { positions: {}, areas: [] }; }
+    }
+    return { positions: {}, areas: [] };
+  }, [level, source, posKey]);
+
+  const persistLayout = useCallback((ns: Node[]) => {
+    const positions: Record<string, { x: number; y: number }> = {};
+    const areas: AreaData[] = [];
+    ns.forEach((n) => {
+      if (n.type === "area") {
+        areas.push({
+          id: n.id,
+          x: n.position.x,
+          y: n.position.y,
+          width: n.measured?.width ?? (n.width as number) ?? 260,
+          height: n.measured?.height ?? (n.height as number) ?? 180,
+          label: (n.data as { label?: string }).label ?? "Area",
+        });
+      } else if (n.type !== "cluster") {
+        positions[n.id] = n.position;
+      }
+    });
+
+    if (level === 3 && source) {
+      fetch(`/api/sources/${source.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ graphLayout: JSON.stringify({ positions, areas }) }),
+      }).catch(() => {});
+      return;
+    }
+    if (posKey) {
+      try { window.localStorage.setItem(posKey, JSON.stringify(positions)); } catch { /* ignore */ }
+    }
+  }, [level, source, posKey]);
+
+  const requestDelete = useCallback((nodeType: PendingDelete["nodeType"], id: string, label: string) => {
+    setPendingDelete({ nodeType, id, label });
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    const { nodeType, id } = pendingDelete;
+    const url =
+      nodeType === "source" ? `/api/sources/${id}` :
+      nodeType === "question" ? `/api/questions/${id}` :
+      `/api/knowledge-cards/${id}`;
+    await fetch(url, { method: "DELETE" });
+    setDeleting(false);
+    setPendingDelete(null);
+    onGraphRefresh();
+  }, [pendingDelete, onGraphRefresh]);
+
+  // ── Custom areas (user-drawn frames to organize questions) ──
+  const renameArea = useCallback((id: string, label: string) => {
+    setNodes((prev) => {
+      const next = prev.map((n) => (n.id === id ? { ...n, data: { ...n.data, label } } : n));
+      persistLayout(next);
+      return next;
+    });
+  }, [setNodes, persistLayout]);
+
+  const deleteArea = useCallback((id: string) => {
+    setNodes((prev) => {
+      const next = prev.filter((n) => n.id !== id);
+      persistLayout(next);
+      return next;
+    });
+  }, [setNodes, persistLayout]);
+
+  const buildAreaNode = useCallback((area: AreaData): Node => ({
+    id: area.id,
+    type: "area",
+    position: { x: area.x, y: area.y },
+    width: area.width,
+    height: area.height,
+    zIndex: 0,
+    // Drag only via the header grip — areas sit behind questions (z-order) so the questions
+    // on top stay clickable without needing pointer-events tricks (which broke dragging).
+    dragHandle: ".area-drag",
+    data: {
+      label: area.label,
+      onRename: (label: string) => renameArea(area.id, label),
+      onDelete: () => deleteArea(area.id),
+    },
+  }), [renameArea, deleteArea]);
+
+  const addArea = useCallback(() => {
+    const center = reactFlow.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+    const area: AreaData = {
+      id: `area-${crypto.randomUUID()}`,
+      x: Math.round(center.x - 140),
+      y: Math.round(center.y - 100),
+      width: 280,
+      height: 200,
+      label: "New area",
+    };
+    setNodes((prev) => {
+      const next = [buildAreaNode(area), ...prev];
+      persistLayout(next);
+      return next;
+    });
+  }, [reactFlow, setNodes, buildAreaNode, persistLayout]);
+
+  // Persist after dragging or resizing finishes.
+  const handleNodesChange = useCallback((changes: Parameters<typeof onNodesChange>[0]) => {
+    onNodesChange(changes);
+    const resizeEnded = changes.some((c) => c.type === "dimensions" && c.resizing === false);
+    if (resizeEnded) {
+      setTimeout(() => setNodes((curr) => { persistLayout(curr); return curr; }), 0);
+    }
+  }, [onNodesChange, setNodes, persistLayout]);
+
+  // Build raw nodes/edges based on level, then enrich data with handlers
+  useEffect(() => {
+    let built: { nodes: Node[]; edges: Edge[] };
+    if (level === 3) {
+      if (!source) { setNodes([]); setEdges([]); return; }
+      built = layoutLevel3(source, questions, cards);
+    } else if (level === 2) {
+      built = layoutLevel2(sources);
+    } else {
+      built = layoutLevel1(spaces, sources);
+    }
+
+    // Enrich node data with click/delete handlers
+    const enriched = built.nodes.map((n) => {
+      if (n.type === "source") {
+        const src = sources.find((s) => `source-${s.id}` === n.id) ?? (source && `source-${source.id}` === n.id ? source : null);
+        if (!src) return n;
+        const videoId = src.youtubeUrl ? extractVideoId(src.youtubeUrl) : null;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            label: src.title,
+            sourceType: src.type,
+            videoId,
+            thumbnailUrl: src.thumbnailUrl ?? null,
+            onDelete: () => requestDelete("source", src.id, src.title),
+          },
+        };
+      }
+      if (n.type === "question") {
+        const q = questions.find((q) => `question-${q.id}` === n.id);
+        if (!q) return n;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            label: q.title,
+            onDelete: () => requestDelete("question", q.id, q.title),
+          },
+        };
+      }
+      if (n.type === "card") {
+        const c = cards.find((c) => `card-${c.id}` === n.id);
+        if (!c) return n;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            label: c.title,
+            onDelete: () => requestDelete("card", c.id, c.title),
+          },
+        };
+      }
+      if (n.type === "cluster") {
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            onHeaderClick: (spaceId: string) => onSelectSpace(spaceId),
+          },
+        };
+      }
+      return n;
+    });
+
+    // Restore any user-dragged positions + custom areas saved for this graph.
+    const { positions: saved, areas } = loadLayout();
+    const positioned = enriched.map((n) =>
+      saved[n.id] ? { ...n, position: saved[n.id] } : n
+    );
+
+    // Area nodes go first so they render behind the questions/cards/source.
+    const areaNodes = (level === 3 ? areas : []).map(buildAreaNode);
+    setNodes([...areaNodes, ...positioned]);
+    setEdges(built.edges);
+  }, [level, spaces, sources, source, questions, cards]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Drive camera for the L1/L2 → L3 transition.
+  // The L3 layout is normalized so the source center sits at world (0, 0), and `defaultViewport`
+  // already places that point at the screen center at DRILL_IN_ZOOM. So on first paint the
+  // L3 source is exactly where the L1 zoom-in animation just ended — no snap needed.
+  // We just trigger a smooth fitView outward to reveal the questions/cards.
+  useLayoutEffect(() => {
+    if (nodes.length === 0) return;
+    if (didInitCameraRef.current) return;
+    didInitCameraRef.current = true;
+
+    if (level === 3) {
+      // Defer one frame so the L3 children have a chance to mount before fitView measures.
+      const raf = requestAnimationFrame(() => {
+        reactFlow.fitView({ duration: 700, padding: 0.3, maxZoom: L3_MAX_ZOOM });
+      });
+      return () => cancelAnimationFrame(raf);
+    } else {
+      reactFlow.fitView({ duration: 300, padding: 0.2 });
+    }
+  }, [nodes, level, reactFlow]);
+
+  const onNodeClick: NodeMouseHandler = useCallback(
+    (_e, node) => {
+      if (zoomingIntoId) return; // ignore clicks during transition
+
+      if (node.type === "cluster") {
+        const spaceId = (node.data as { spaceId: string }).spaceId;
+        if (spaceId) onSelectSpace(spaceId);
+        return;
+      }
+      if (node.type === "source") {
+        const sourceId = node.id.replace("source-", "");
+        if (level === 3) {
+          onOpenViewer();
+          return;
+        }
+        const src = sources.find((s) => s.id === sourceId);
+        if (!src) return;
+
+        // Zoom-into-source transition: animate camera toward the clicked node,
+        // fade the rest of the graph, then drill in.
+        const internal = reactFlow.getInternalNode?.(node.id);
+        const abs = internal?.internals?.positionAbsolute ?? node.position;
+        const w = internal?.measured?.width ?? node.width ?? 165;
+        const h = internal?.measured?.height ?? node.height ?? 180;
+        const cx = abs.x + w / 2;
+        const cy = abs.y + h / 2;
+        const duration = 380;
+        reactFlow.setCenter(cx, cy, { zoom: DRILL_IN_ZOOM, duration });
+        setZoomingIntoId(node.id);
+        setTimeout(() => onSelectSource(src), duration);
+        return;
+      }
+      if (node.type === "question") onSelectNode({ type: "question", id: node.id.replace("question-", "") });
+      else if (node.type === "card") onSelectNode({ type: "card", id: node.id.replace("card-", "") });
+    },
+    [level, sources, onSelectSpace, onSelectSource, onOpenViewer, onSelectNode, reactFlow, zoomingIntoId]
+  );
+
+  const styledNodes = useMemo(
+    () =>
+      nodes.map((n) => {
+        // During zoom-into-source: keep clicked node visible, fade everything else.
+        if (zoomingIntoId) {
+          const isClicked = n.id === zoomingIntoId;
+          return {
+            ...n,
+            style: {
+              ...(n.style ?? {}),
+              opacity: isClicked ? 1 : 0,
+              transition: "opacity 320ms ease",
+            },
+          };
+        }
+        if (n.type === "cluster" || n.type === "area") return n;
+        const isSelected =
+          (selectedNode?.type === "question" && n.id === `question-${selectedNode.id}`) ||
+          (selectedNode?.type === "card" && n.id === `card-${selectedNode.id}`);
+
+        // Stagger-fade L3 non-source nodes on mount so they appear as the camera zooms out.
+        const isL3Child = level === 3 && (n.type === "question" || n.type === "card");
+        const appearAnim = isL3Child ? "node-appear 500ms ease 250ms both" : undefined;
+
+        return {
+          ...n,
+          style: {
+            ...(n.style ?? {}),
+            opacity: isSelected ? 1 : 0.95,
+            outline: isSelected ? "2px solid var(--accent)" : "none",
+            borderRadius: 16,
+            animation: appearAnim,
+          },
+        };
+      }),
+    [nodes, selectedNode, zoomingIntoId, level]
+  );
+
+  // Fade edges during zoom-into-source; stagger-fade edges on L3 entry.
+  const styledEdges = useMemo(() => {
+    if (zoomingIntoId) {
+      return edges.map((e) => ({
+        ...e,
+        style: { ...(e.style ?? {}), opacity: 0, transition: "opacity 320ms ease" },
+      }));
+    }
+    if (level === 3) {
+      return edges.map((e) => ({
+        ...e,
+        style: { ...(e.style ?? {}), animation: "node-appear 500ms ease 350ms both" },
+      }));
+    }
+    return edges;
+  }, [edges, zoomingIntoId, level]);
+
+  return (
+    <>
+      <ReactFlow
+        nodes={styledNodes}
+        edges={styledEdges}
+        onNodesChange={handleNodesChange}
+        onEdgesChange={onEdgesChange}
+        onNodeClick={onNodeClick}
+        onNodeDragStop={() => setNodes((curr) => { persistLayout(curr); return curr; })}
+        nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        elevateNodesOnSelect={false}
+        defaultViewport={computeDefaultViewport(level)}
+        style={{ background: "var(--background)" }}
+      >
+        <Background variant={BackgroundVariant.Dots} color="#C8BCA8" gap={22} size={1.2} />
+        <Controls
+          style={{
+            background: "var(--panel-bg)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            boxShadow: "0 1px 4px rgba(0,0,0,0.07)",
+          }}
+        />
+      </ReactFlow>
+
+      {/* Add-area button (single-source graph only) */}
+      {level === 3 && (
+        <button
+          onClick={addArea}
+          className="absolute top-3 left-3 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full type-mono shadow-sm transition-opacity hover:opacity-80"
+          style={{
+            fontSize: "0.68rem",
+            letterSpacing: "0.03em",
+            background: "var(--panel-bg)",
+            color: "var(--text-secondary)",
+            border: "1px solid var(--border)",
+          }}
+          title="Add an area to organize questions"
+        >
+          <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <path d="M12 8v8M8 12h8" />
+          </svg>
+          Area
+        </button>
+      )}
+
+      {pendingDelete && (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center"
+          style={{ background: "rgba(26,25,23,0.45)" }}
+          onClick={() => setPendingDelete(null)}
+        >
+          <div
+            className="rounded-2xl px-6 py-5 shadow-2xl"
+            style={{
+              background: "var(--panel-bg)",
+              border: "1px solid var(--border)",
+              minWidth: 300,
+              maxWidth: 360,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="type-serif font-semibold mb-1" style={{ fontSize: "0.95rem", color: "var(--foreground)" }}>
+              Delete {pendingDelete.nodeType === "source" ? "source" : pendingDelete.nodeType === "question" ? "question" : "card"}?
+            </p>
+            <p className="mb-5" style={{ fontSize: "0.78rem", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+              <span style={{ fontStyle: "italic" }}>&ldquo;{pendingDelete.label}&rdquo;</span>
+              {pendingDelete.nodeType === "source" && " and all its questions and cards"} will be permanently deleted.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setPendingDelete(null)}
+                className="px-4 py-1.5 rounded-lg type-mono text-xs transition-opacity hover:opacity-70"
+                style={{ background: "var(--active-row)", color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="px-4 py-1.5 rounded-lg type-mono text-xs transition-opacity hover:opacity-80 disabled:opacity-50"
+                style={{ background: "#C0392B", color: "#fff", border: "none" }}
+              >
+                {deleting ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
