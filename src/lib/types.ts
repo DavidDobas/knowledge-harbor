@@ -1,4 +1,4 @@
-export type SourceType = "pdf" | "youtube";
+export type SourceType = "pdf" | "youtube" | "note";
 
 export interface Space {
   id: string;

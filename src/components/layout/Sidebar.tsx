@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { Space, Source } from "@/lib/types";
 import { SPACE_COLORS } from "@/lib/colors";
 import AddSourceModal from "@/components/modals/AddSourceModal";
@@ -62,28 +62,21 @@ function PDFIcon() {
 }
 
 interface Props {
+  spaces: Space[];
+  sources: Source[];
   selectedSpaceId: string | null;
   onSelectSpace: (id: string | null) => void;
   onSelectSource: (source: Source) => void;
   onSourceAdded: () => void;
-  refreshKey: number;
+  onSpaceAdded: () => void;
 }
 
-export default function Sidebar({ selectedSpaceId, onSelectSpace, onSelectSource, onSourceAdded, refreshKey }: Props) {
-  const [spaces, setSpaces] = useState<Space[]>([]);
-  const [sources, setSources] = useState<Source[]>([]);
+export default function Sidebar({
+  spaces, sources, selectedSpaceId, onSelectSpace, onSelectSource, onSourceAdded, onSpaceAdded,
+}: Props) {
   const [showAddSource, setShowAddSource] = useState(false);
   const [newSpaceName, setNewSpaceName] = useState("");
   const [addingSpace, setAddingSpace] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/spaces").then((r) => r.json()).then(setSpaces);
-  }, [refreshKey]);
-
-  useEffect(() => {
-    const url = selectedSpaceId ? `/api/sources?spaceId=${selectedSpaceId}` : "/api/sources";
-    fetch(url).then((r) => r.json()).then(setSources);
-  }, [selectedSpaceId, refreshKey]);
 
   async function createSpace() {
     if (!newSpaceName.trim()) return;
@@ -94,7 +87,7 @@ export default function Sidebar({ selectedSpaceId, onSelectSpace, onSelectSource
     });
     setNewSpaceName("");
     setAddingSpace(false);
-    fetch("/api/spaces").then((r) => r.json()).then(setSpaces);
+    onSpaceAdded();
   }
 
   return (

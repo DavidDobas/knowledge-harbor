@@ -1,16 +1,27 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import Sidebar from "@/components/layout/Sidebar";
 import CenterPane from "@/components/layout/CenterPane";
 import RightPanel from "@/components/layout/RightPanel";
-import type { SelectedNode, Source } from "@/lib/types";
+import type { SelectedNode, Source, Space, Question, KnowledgeCard } from "@/lib/types";
 
 const NAV_STATE_KEY = "kh.navState";
 
 export default function Home() {
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
+  const [spaces, setSpaces] = useState<Space[]>([]);
+  const [allSources, setAllSources] = useState<Source[]>([]);
   const [activeSource, setActiveSource] = useState<(Source & { pdfUrl?: string }) | null>(null);
+  const [sourceQuestions, setSourceQuestions] = useState<Question[]>([]);
+  const [sourceCards, setSourceCards] = useState<KnowledgeCard[]>([]);
+  const [drillInTransition, setDrillInTransition] = useState(false);
+  const graphDataCache = useRef(new Map<string, {
+    questions: Question[];
+    cards: KnowledgeCard[];
+    source?: Source;
+  }>());
+  const graphDataLoadedForRef = useRef<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<SelectedNode | null>(null);
   const [activeChunkIdx, setActiveChunkIdx] = useState(-1);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -34,7 +45,91 @@ export default function Home() {
   const handleRegisterSeek = useCallback((fn: (ms: number) => void) => { seekRef.current = fn; }, []);
   const handleSeekTo = useCallback((ms: number) => { seekRef.current?.(ms); }, []);
 
-  const refresh = () => setRefreshKey((k) => k + 1);
+  const fetchFullSourceDetails = useCallback((sourceId: string) => {
+    fetch(`/api/sources/${sourceId}`)
+      .then((r) => r.json())
+      .then((full) => {
+        if (full?.id) {
+          setActiveSource((prev) => (prev?.id === full.id ? { ...prev, ...full } : full));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const refresh = () => {
+    graphDataCache.current.clear();
+    graphDataLoadedForRef.current = null;
+    setRefreshKey((k) => k + 1);
+  };
+
+  const loadSourceGraphData = useCallback((sourceId: string) => {
+    const cached = graphDataCache.current.get(sourceId);
+    if (cached) return Promise.resolve(cached);
+    return fetch(`/api/sources/${sourceId}/graph`)
+      .then((r) => r.json())
+      .then((data) => {
+        const result = {
+          questions: Array.isArray(data.questions) ? data.questions as Question[] : [],
+          cards: Array.isArray(data.cards) ? data.cards as KnowledgeCard[] : [],
+          source: data.source?.id ? data.source as Source : undefined,
+        };
+        graphDataCache.current.set(sourceId, result);
+        return result;
+      });
+  }, []);
+
+  const prefetchSourceGraph = useCallback((source: Source) => {
+    loadSourceGraphData(source.id);
+  }, [loadSourceGraphData]);
+
+  // Single slim round-trip: graph nodes + fresh graphLayout (no transcript/notes/summary).
+  const ensureSourceGraphReady = useCallback(
+    (sourceId: string) => loadSourceGraphData(sourceId),
+    [loadSourceGraphData],
+  );
+
+  const handleDrillInComplete = useCallback(() => {
+    setDrillInTransition(false);
+  }, []);
+
+  // Load questions/cards when the active source changes — skip if already loaded
+  // (e.g. drill-in prefetched graph data before activeSource was set).
+  useEffect(() => {
+    if (!activeSource) {
+      setSourceQuestions([]);
+      setSourceCards([]);
+      graphDataLoadedForRef.current = null;
+      return;
+    }
+    if (graphDataLoadedForRef.current === activeSource.id) return;
+
+    loadSourceGraphData(activeSource.id).then((data) => {
+      graphDataLoadedForRef.current = activeSource.id;
+      setSourceQuestions(data.questions);
+      setSourceCards(data.cards);
+      if (data.source) {
+        setActiveSource((prev) =>
+          prev?.id === data.source!.id ? { ...prev, ...data.source } : prev,
+        );
+      }
+    });
+  }, [activeSource?.id, refreshKey, loadSourceGraphData]);
+
+  // Load spaces + all sources once; filter client-side when switching spaces.
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/spaces").then((r) => r.json()),
+      fetch("/api/sources").then((r) => r.json()),
+    ]).then(([sp, srcs]) => {
+      if (Array.isArray(sp)) setSpaces(sp);
+      if (Array.isArray(srcs)) setAllSources(srcs);
+    }).catch(() => {});
+  }, [refreshKey]);
+
+  const visibleSources = useMemo(
+    () => (selectedSpaceId ? allSources.filter((s) => s.spaceId === selectedSpaceId) : allSources),
+    [allSources, selectedSpaceId],
+  );
 
   // Merge a partial update into activeSource without triggering a server re-fetch (which
   // would generate a new pdfUrl and cause react-pdf to reload the binary). Used for
@@ -90,23 +185,47 @@ export default function Home() {
     if (node?.type === "question") setPdfSelection(null);
   }
 
-  function handleSelectSourceFromGraph(source: Source) {
-    // Drill into Level 3 graph (do NOT open viewer)
+  const handleSelectSourceFromGraph = useCallback((
+    source: Source,
+    opts?: {
+      drillIn?: boolean;
+      graphData?: { questions: Question[]; cards: KnowledgeCard[]; source?: Source };
+    },
+  ) => {
     setSelectedSpaceId(source.spaceId);
-    fetch(`/api/sources/${source.id}`).then((r) => r.json()).then(setActiveSource);
+    setDrillInTransition(opts?.drillIn ?? false);
+    setSelectedNode(null);
+    setActiveChunkIdx(-1);
+    setPdfSelection(null);
+    setViewMode("graph");
+    const graphData = opts?.graphData ?? graphDataCache.current.get(source.id);
+    if (graphData) {
+      graphDataLoadedForRef.current = source.id;
+      setSourceQuestions(graphData.questions);
+      setSourceCards(graphData.cards);
+    }
+    const graphSource = opts?.graphData?.source;
+    setActiveSource(graphSource ? { ...source, ...graphSource } : source);
+    // Heavy fields (transcript, notes, pdfUrl) load in the background — graph doesn't wait.
+    fetchFullSourceDetails(source.id);
+  }, [fetchFullSourceDetails]);
+
+  function handleSelectSpace(spaceId: string | null) {
+    setSelectedSpaceId(spaceId);
+    setActiveSource(null);
+    setDrillInTransition(false);
     setSelectedNode(null);
     setActiveChunkIdx(-1);
     setPdfSelection(null);
     setViewMode("graph");
   }
 
-  function handleSelectSpace(spaceId: string | null) {
-    setSelectedSpaceId(spaceId);
-    setActiveSource(null);
-    setSelectedNode(null);
-    setActiveChunkIdx(-1);
-    setPdfSelection(null);
-    setViewMode("graph");
+  // Navigate to a source referenced from notes.
+  async function handleOpenSource(sourceId: string) {
+    try {
+      const src = await fetch(`/api/sources/${sourceId}`).then((r) => r.json());
+      if (src?.id) handleSelectSourceFromGraph(src);
+    } catch { /* ignore */ }
   }
 
   // Open a chat thread referenced from notes. The thread may belong to a different source,
@@ -145,14 +264,24 @@ export default function Home() {
 
       <div className="flex-1 flex overflow-hidden">
         <Sidebar
+          spaces={spaces}
+          sources={visibleSources}
           selectedSpaceId={selectedSpaceId}
           onSelectSpace={handleSelectSpace}
           onSelectSource={handleSelectSourceFromGraph}
           onSourceAdded={refresh}
-          refreshKey={refreshKey}
+          onSpaceAdded={refresh}
         />
         <CenterPane
           activeSource={activeSource}
+          spaces={spaces}
+          allSources={allSources}
+          questions={sourceQuestions}
+          cards={sourceCards}
+          drillInTransition={drillInTransition}
+          onDrillInComplete={handleDrillInComplete}
+          onPrefetchSource={prefetchSourceGraph}
+          onEnsureSourceGraphReady={ensureSourceGraphReady}
           selectedSpaceId={selectedSpaceId}
           selectedNode={selectedNode}
           viewMode={viewMode}
@@ -167,7 +296,6 @@ export default function Home() {
           onClearPdfSelection={() => setPdfSelection(null)}
           onActiveSourceUpdate={updateActiveSource}
           pdfSelection={pdfSelection}
-          refreshKey={refreshKey}
         />
         <RightPanel
           activeSource={activeSource}
@@ -177,9 +305,11 @@ export default function Home() {
           onSeekTo={handleSeekTo}
           onSelectNode={handleSelectNode}
           onGraphRefresh={refresh}
+          onActiveSourceUpdate={updateActiveSource}
           pdfSelection={pdfSelection}
           onClearPdfSelection={() => setPdfSelection(null)}
           onOpenThread={handleOpenThread}
+          onOpenSource={handleOpenSource}
           pendingInitialMessage={pendingInitialMessage}
           onPdfQuestionCreated={(questionId, message, passage, page) => {
             setPdfSelection(null);

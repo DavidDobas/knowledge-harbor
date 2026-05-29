@@ -7,6 +7,7 @@ import type { Message, Question, Source } from "@/lib/types";
 interface Props {
   questionId: string;
   onSummarized: () => void;
+  onGraphRefresh?: () => void;
   initialMessage?: string;
   // Passage + page from the originating PDF selection. Used to render the highlighted
   // context block immediately on mount, before the question row has been fetched —
@@ -24,7 +25,7 @@ function MarkdownMessage({ content }: { content: string }) {
   );
 }
 
-export default function QuestionPanel({ questionId, onSummarized, initialMessage, initialPassage, initialPage, source }: Props) {
+export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh, initialMessage, initialPassage, initialPage, source }: Props) {
   const [question, setQuestion] = useState<Question | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
@@ -32,6 +33,9 @@ export default function QuestionPanel({ questionId, onSummarized, initialMessage
   const [streaming, setStreaming] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
   const [streamBuffer, setStreamBuffer] = useState("");
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const titleInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true); // whether the view is stuck to the bottom
@@ -68,6 +72,12 @@ export default function QuestionPanel({ questionId, onSummarized, initialMessage
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), questionId, role: "assistant", content: full, createdAt: new Date().toISOString() }]);
     setStreamBuffer("");
     setStreaming(false);
+
+    // Re-fetch the question to pick up the AI-generated title, and refresh the graph node.
+    // The title is written to the DB by a background task (~1-2s after creation), so by
+    // the time the first response finishes streaming it is reliably available.
+    fetch(`/api/questions/${questionId}`).then((r) => r.json()).then(setQuestion).catch(() => {});
+    onGraphRefresh?.();
   }
 
   useEffect(() => {
@@ -106,6 +116,28 @@ export default function QuestionPanel({ questionId, onSummarized, initialMessage
     onSummarized();
   }
 
+  function startEditTitle() {
+    setTitleDraft(question?.title ?? "");
+    setEditingTitle(true);
+    setTimeout(() => { titleInputRef.current?.select(); }, 0);
+  }
+
+  async function commitTitle() {
+    setEditingTitle(false);
+    const trimmed = titleDraft.trim();
+    if (!trimmed || trimmed === question?.title) return;
+    const res = await fetch(`/api/questions/${questionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: trimmed }),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      setQuestion(updated);
+      onGraphRefresh?.();
+    }
+  }
+
   // Prefer the canonical row once it's loaded; fall back to the props handed in from
   // PDFSelectionPanel so the passage renders on the very first frame after mount.
   const passageText = question?.pdfHighlightText ?? initialPassage ?? null;
@@ -115,9 +147,37 @@ export default function QuestionPanel({ questionId, onSummarized, initialMessage
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
       {/* Header */}
       <div className="px-5 py-3 border-b shrink-0 flex items-start justify-between gap-3" style={{ borderColor: "var(--border)" }}>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="type-mono text-xs mb-1" style={{ color: "var(--muted)", fontSize: "0.68rem", letterSpacing: "0.05em", textTransform: "uppercase" }}>Thread</p>
-          <h2 className="type-serif font-semibold text-sm leading-snug" style={{ color: "var(--foreground)" }}>{question?.title ?? initialMessage ?? ""}</h2>
+          {editingTitle ? (
+            <input
+              ref={titleInputRef}
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={commitTitle}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); commitTitle(); }
+                if (e.key === "Escape") { setEditingTitle(false); }
+              }}
+              className="type-serif font-semibold text-sm leading-snug w-full rounded px-1 -mx-1 outline-none"
+              style={{ color: "var(--foreground)", background: "var(--active-row)", border: "1px solid var(--accent)" }}
+            />
+          ) : (
+            <h2
+              onClick={startEditTitle}
+              title="Click to rename"
+              className="type-serif font-semibold text-sm leading-snug cursor-text group/title relative"
+              style={{ color: "var(--foreground)" }}
+            >
+              {question?.title ?? initialMessage ?? ""}
+              <span
+                className="opacity-0 group-hover/title:opacity-100 transition-opacity ml-1.5 type-mono"
+                style={{ fontSize: "0.6rem", color: "var(--muted)", verticalAlign: "middle" }}
+              >
+                edit
+              </span>
+            </h2>
+          )}
         </div>
         <button
           onClick={summarize}

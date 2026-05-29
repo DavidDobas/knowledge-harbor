@@ -131,5 +131,12 @@ export default function YouTubePlayer({ videoId, rawTranscript, onActiveChunkIdx
     return () => clearInterval(interval);
   }, [videoId, segments, chunks, onActiveChunkIdxChange]);
 
-  return <div ref={playerElRef} className="w-full h-full" />;
+  // Wrap in a stable container div that React owns. The YouTube IFrame API replaces
+  // the inner div with an <iframe>, so React must never try to removeChild it directly —
+  // only the outer wrapper is managed by React's reconciler.
+  return (
+    <div className="w-full h-full">
+      <div ref={playerElRef} className="w-full h-full" />
+    </div>
+  );
 }

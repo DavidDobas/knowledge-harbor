@@ -116,7 +116,7 @@ export async function generateQuestionTitle(question: string, context?: string |
           : `Question: ${question}`,
       },
     ],
-    max_tokens: 24,
+    max_completion_tokens: 24,
     temperature: 0.3,
   });
   const out = response.choices[0]?.message?.content?.trim().replace(/^["']|["']$/g, "") ?? "";
@@ -127,19 +127,39 @@ export async function generateSummary(rawTranscript: string): Promise<string> {
   const segments = parseTranscript(rawTranscript);
   const formatted = segments.map((s) => `[${formatTime(s.offset)}] ${s.text}`).join("\n");
 
-  const response = await openai.chat.completions.create({
-    model: BACKGROUND_MODEL,
-    messages: [
-      {
-        role: "system",
-        content: "You create structured video summaries. Use ONLY the exact timestamps visible in the transcript — never invent or estimate them. Cover the entire video from start to finish.",
-      },
+  const response = await openai.responses.create({
+    model: CHAT_MODEL,
+    instructions:
+      "You create structured video summaries. Use ONLY the exact timestamps visible in the transcript — never invent or estimate them. Cover the entire video from start to finish.",
+    input: [
       {
         role: "user",
         content: `Summarize this timestamped transcript into sections using this format:\n## Section Title [MM:SS–MM:SS]\n- key point\n- key point\n\nDerive the timestamp ranges from the actual [MM:SS] markers in the transcript. Cover the FULL video — include sections all the way to the end. Keep each section concise.\n\nTranscript:\n${formatted}`,
       },
     ],
-    max_tokens: 4000,
   });
-  return response.choices[0]?.message?.content ?? "";
+  return response.output_text ?? "";
+}
+
+export async function generatePdfSummary(sourceId: string): Promise<string | null> {
+  const fileId = await ensureOpenaiFileId(sourceId);
+  if (!fileId) return null;
+
+  const response = await openai.responses.create({
+    model: CHAT_MODEL,
+    instructions:
+      "You are a research assistant. Produce a clear, structured summary of the attached document. " +
+      "Format: ## Section headings for major topics, bullet points for key points under each section. " +
+      "Cover the full document — main thesis, key arguments, methodology (if any), findings, and conclusions.",
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_file", file_id: fileId },
+          { type: "input_text", text: "Please provide a structured summary of this document." },
+        ],
+      },
+    ],
+  });
+  return response.output_text ?? null;
 }

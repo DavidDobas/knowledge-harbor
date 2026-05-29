@@ -86,13 +86,18 @@ interface Props {
   onGraphRefresh: () => void;
   viewMode: "graph" | "viewer";
   onOpenThread: (questionId: string) => void;
+  onOpenSource?: (sourceId: string) => void;
+  // Called after a successful retry of the transcript fetch so the parent can update
+  // `activeSource.transcript` — keeps the YouTube player (CenterPane) and chat context in sync.
+  onTranscriptUpdated?: (transcript: string) => void;
+  initialSummary?: string | null;
   // When a question node is selected in the graph, open that thread in the chat view
   // (so it shows the same transcript-chunk view it was created with).
   externalQuestionId?: string | null;
   onCloseThread?: () => void;
 }
 
-export default function TranscriptWithChat({ sourceId, rawTranscript, activeChunkIdx, onSeekTo, onGraphRefresh, viewMode, onOpenThread, externalQuestionId, onCloseThread }: Props) {
+export default function TranscriptWithChat({ sourceId, rawTranscript, activeChunkIdx, onSeekTo, onGraphRefresh, viewMode, onOpenThread, onOpenSource, onTranscriptUpdated, initialSummary, externalQuestionId, onCloseThread }: Props) {
   // Notes is the default tab. We intentionally do NOT auto-switch to Transcript when the
   // video viewer opens — the user prefers to stay on Notes while watching/playing.
   // Initial value still respects viewMode so a fresh mount in viewer mode starts on Transcript.
@@ -105,6 +110,8 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatchCursor, setSearchMatchCursor] = useState(0);
   const [threadsOnly, setThreadsOnly] = useState(false);
+  const [transcriptRetrying, setTranscriptRetrying] = useState(false);
+  const [transcriptRetryError, setTranscriptRetryError] = useState<string | null>(null);
 
   // Chat state
   const [activeQuestionChunkIdx, setActiveQuestionChunkIdx] = useState<number | null>(null);
@@ -307,6 +314,25 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
     }
   }
 
+  async function retryTranscript() {
+    if (transcriptRetrying) return;
+    setTranscriptRetrying(true);
+    setTranscriptRetryError(null);
+    try {
+      const res = await fetch(`/api/sources/${sourceId}/transcript`);
+      const data = (await res.json()) as { transcript?: string | null; error?: string };
+      if (data.transcript) {
+        onTranscriptUpdated?.(data.transcript);
+      } else {
+        setTranscriptRetryError(data.error ?? "Transcript unavailable for this video.");
+      }
+    } catch {
+      setTranscriptRetryError("Network error while fetching transcript.");
+    } finally {
+      setTranscriptRetrying(false);
+    }
+  }
+
   function handleAsk(ci: number) {
     setActiveQuestionChunkIdx(ci);
     setMessages([]);
@@ -339,9 +365,10 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
     setCreating(false);
     onGraphRefresh();
     setActiveQuestionId(question.id);
-    // The node title is generated server-side in the background; refresh once it's ready.
-    setTimeout(() => onGraphRefresh(), 3000);
     await streamMessage(question.id, initialMsg);
+    // Refresh after streaming completes — by this point the background title generation
+    // has finished and the graph node will show the AI-generated title.
+    onGraphRefresh();
   }
 
   async function sendFollowup() {
@@ -407,20 +434,20 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
                 {t.label}
               </button>
             ))}
-            {tab === "transcript" && !isFiltering && (
+            {tab === "transcript" && chunks.length > 0 && !isFiltering && (
               <span className="type-mono ml-auto" style={{ fontSize: "0.65rem", color: "var(--muted)" }}>
                 {chunks.length} passages
               </span>
             )}
-            {tab === "transcript" && isFiltering && (
+            {tab === "transcript" && chunks.length > 0 && isFiltering && (
               <span className="type-mono ml-auto" style={{ fontSize: "0.65rem", color: "var(--accent)" }}>
                 {filteredItems.length} shown
               </span>
             )}
           </div>
 
-          {/* Search + filter bar */}
-          {tab === "transcript" && (
+          {/* Search + filter bar — hidden when there's no transcript to search. */}
+          {tab === "transcript" && chunks.length > 0 && (
             <div className="shrink-0 px-3 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border)" }}>
               <div className="relative flex-1">
                 <svg
@@ -482,8 +509,13 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
             </div>
           )}
 
-          {/* Tab content */}
-          {tab === "summary" && <SummaryView sourceId={sourceId} />}
+          {/* Tab content — keep Summary mounted so client cache survives tab switches. */}
+          <div
+            className="flex-1 flex flex-col min-h-0 overflow-hidden"
+            style={{ display: tab === "summary" ? "flex" : "none" }}
+          >
+            <SummaryView sourceId={sourceId} initialSummary={initialSummary} />
+          </div>
 
           {tab === "notes" && notesLoaded && (
             <NotesView
@@ -495,10 +527,45 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
               onSeekTo={onSeekTo}
               onSwitchToTranscript={() => setTab("transcript")}
               onOpenThread={onOpenThread}
+              onOpenSource={onOpenSource}
             />
           )}
 
-          {tab === "transcript" && (
+          {tab === "transcript" && chunks.length === 0 && (
+            <div className="flex-1 flex items-center justify-center px-6 py-8">
+              <div className="flex flex-col items-center gap-3 text-center max-w-xs">
+                <p className="text-sm" style={{ color: "var(--foreground)" }}>
+                  No transcript available
+                </p>
+                <p className="text-xs leading-relaxed" style={{ color: "var(--muted)" }}>
+                  YouTube didn&apos;t return captions when this source was added.
+                  This can happen for videos without subtitles, or when the
+                  transcript service is temporarily unreachable.
+                </p>
+                <button
+                  onClick={retryTranscript}
+                  disabled={transcriptRetrying}
+                  className="type-mono mt-1 px-3 py-1.5 rounded-md transition-opacity disabled:opacity-50 hover:opacity-80"
+                  style={{
+                    fontSize: "0.68rem",
+                    letterSpacing: "0.05em",
+                    textTransform: "uppercase",
+                    background: "var(--accent)",
+                    color: "#fff",
+                  }}
+                >
+                  {transcriptRetrying ? "Fetching…" : "↺ Retry fetch"}
+                </button>
+                {transcriptRetryError && (
+                  <p className="text-xs" style={{ color: "var(--muted)" }}>
+                    {transcriptRetryError}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {tab === "transcript" && chunks.length > 0 && (
             <div className="relative flex-1 min-h-0">
               <div className="h-full overflow-y-auto" onScroll={handleScroll}>
                 {filteredItems.length === 0 && isFiltering && (

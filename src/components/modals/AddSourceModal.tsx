@@ -11,7 +11,7 @@ interface Props {
 }
 
 export default function AddSourceModal({ spaceId, onClose, onAdded }: Props) {
-  const [tab, setTab] = useState<"pdf" | "youtube">("youtube");
+  const [tab, setTab] = useState<"pdf" | "youtube" | "note">("youtube");
   const [title, setTitle] = useState("");
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -58,7 +58,14 @@ export default function AddSourceModal({ spaceId, onClose, onAdded }: Props) {
     setError("");
     setLoading(true);
     try {
-      if (tab === "youtube") {
+      if (tab === "note") {
+        const res = await fetch("/api/sources", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "note", title, spaceId: resolvedSpaceId }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+      } else if (tab === "youtube") {
         if (!youtubeUrl.trim()) { setError("YouTube URL required"); setLoading(false); return; }
         const res = await fetch("/api/sources", {
           method: "POST",
@@ -98,14 +105,14 @@ export default function AddSourceModal({ spaceId, onClose, onAdded }: Props) {
 
         {/* Tabs */}
         <div className="flex gap-2 mb-5">
-          {(["youtube", "pdf"] as const).map((t) => (
+          {(["youtube", "pdf", "note"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
               className="flex-1 py-1.5 rounded text-xs font-medium transition-colors"
               style={{ background: tab === t ? "var(--accent)" : "var(--background)", color: tab === t ? "#fff" : "var(--muted)", border: "1px solid var(--border)" }}
             >
-              {t === "youtube" ? "YouTube" : "PDF"}
+              {t === "youtube" ? "YouTube" : t === "pdf" ? "PDF" : "Note"}
             </button>
           ))}
         </div>
@@ -171,7 +178,13 @@ export default function AddSourceModal({ spaceId, onClose, onAdded }: Props) {
             )}
           </div>
 
-          {tab === "youtube" ? (
+          {tab === "note" ? (
+            <div key="note-hint" className="rounded-lg px-4 py-3" style={{ background: "var(--active-row)", border: "1px solid var(--border)" }}>
+              <p className="text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+                A note is a freeform markdown document — write anything, reference chat threads with <span className="type-mono" style={{ color: "var(--accent)" }}>@</span>, embed images, and link across your spaces.
+              </p>
+            </div>
+          ) : tab === "youtube" ? (
             <div key="yt-input-block">
               <label className="text-xs mb-1 block" style={{ color: "var(--muted)" }}>YouTube URL</label>
               <input
@@ -249,6 +262,7 @@ export default function AddSourceModal({ spaceId, onClose, onAdded }: Props) {
               />
             </div>
           )}
+
 
           {error && <p className="text-xs" style={{ color: "#f87171" }}>{error}</p>}
 

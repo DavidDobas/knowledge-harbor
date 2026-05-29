@@ -1,33 +1,37 @@
 # Knowledge Harbor
 
 A personal self-study workspace. Organize what you're learning into **spaces**,
-add **sources** (YouTube videos or PDFs), and turn each source into an
-interactive study session:
+add **sources**, and turn each one into an interactive study session.
 
-- **YouTube** — live, chunked transcript synced to the player. Click any
-  passage to spawn a chat thread about that exact moment.
-- **PDFs** — highlight text, leave comments, or spawn a chat thread anchored
-  to the selection. Highlights and threads persist per page.
-- **Notes** — a per-source Markdown notebook with embedded images and links
-  back to your chat threads.
-- **Chat threads** — backed by OpenAI's Responses API. PDFs are uploaded as
-  `input_file` for full-document context; YouTube threads use the transcript.
-  Optional per-thread `web_search` for following up on cited references.
-- **Knowledge cards** — distill any thread into a saved card.
-- **Graph view** — everything (spaces, sources, threads, cards) rendered as
-  a knowledge graph via React Flow.
+### Source types
 
-Single-user app — there's no auth. Designed to run locally or on a private
-deployment.
+| Type | What it is |
+| --- | --- |
+| **YouTube** | Live, chunked transcript synced to the player. Click any passage to spawn a chat thread about that exact moment. |
+| **PDF** | Highlight text, leave comments, or spawn a chat thread anchored to the selection. Highlights and threads persist per page. |
+| **Note** | A standalone Markdown document — its own source in a space, visible on the graph, edited in the right panel. Use these for scratch notes, lecture write-ups, or anything that isn't tied to a video or paper. |
+
+All source types share the same **graph**, **spaces**, and cross-linking tools below.
+
+### Study tools
+
+- **Notes** — per-source Markdown notebook (Tiptap) with embedded images, `@` mentions of **threads and other sources**, and rich paste from chat (tables, formatting, LaTeX equations).
+- **Summaries** — AI-generated structured summaries for YouTube (from transcript) and PDFs (from the document). Cached in the database; the Summary tab reuses them without re-fetching on every visit.
+- **Chat threads** — backed by OpenAI's Responses API (`gpt-5.5`). PDFs are uploaded as `input_file` for full-document context; YouTube threads use the transcript. Optional per-thread `web_search` for following up on cited references. Thread titles are AI-generated and **editable inline** in the thread view.
+- **Knowledge cards** — distill any thread into a saved card on the graph.
+- **Graph view** — spaces → sources → threads/cards, rendered with React Flow. Drag nodes to rearrange; draw **areas** to group questions. Layouts persist per source. Smooth drill-in from a space to a single source.
+
+Single-user app — there's no auth. Designed to run locally or on a private deployment.
 
 ## Stack
 
 - Next.js 16 (App Router) + React 19
 - Drizzle ORM on Neon Postgres
 - S3-compatible object storage for PDFs and thumbnails
-- OpenAI Responses API (chat) + Chat Completions (background tasks)
+- OpenAI Responses API (`gpt-5.5` for chat & summaries) + Chat Completions (background tasks)
+- Tiptap (notes editor), `react-markdown` + KaTeX (rendering)
 - `react-pdf` / `pdfjs-dist` for PDF rendering
-- `@xyflow/react` for the graph
+- `@xyflow/react` + dagre for the graph
 
 ## Minimal setup
 
@@ -76,7 +80,7 @@ This creates the `spaces`, `sources`, `questions`, `messages`, and
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000) (default port **3000**).
 
 ## Scripts
 
@@ -100,8 +104,8 @@ src/
     layout/           # Sidebar, CenterPane, RightPanel
     graph/            # React Flow canvas + custom nodes
     source/           # PDF viewer, YouTube player, transcript, notes, chat
-    panels/           # Source / Question / KnowledgeCard / PDFSelection panels
-    modals/           # AddSourceModal
+    panels/           # Source / Question / KnowledgeCard / Note / PDFSelection panels
+    modals/           # AddSourceModal (YouTube, PDF, Note tabs)
   lib/
     db/               # Drizzle schema + client
     openai.ts         # OpenAI client + prompt builders
@@ -112,10 +116,11 @@ src/
 
 ## Notes on usage
 
-- Adding a YouTube source fetches the transcript automatically.
-- Adding a PDF uploads it to S3 and, on first chat, registers it with the
-  OpenAI Files API so the model can read the whole document.
-- The graph view (`/`) is the home screen — each level (spaces → sources →
-  threads/cards) is its own React Flow canvas.
-- Navigation state (selected space, source, view mode) is persisted in
-  `localStorage` so a refresh lands you where you left off.
+- **Adding sources** — use the **+** button in the sidebar. Choose YouTube, PDF, or **Note** (title only; no upload required).
+- **YouTube** — transcript is fetched automatically on add. If it fails, open the Transcript tab and use **Retry fetch**.
+- **PDF** — uploaded to S3; on first chat, registered with the OpenAI Files API so the model can read the whole document.
+- **Notes (source type)** — opens directly in the right-panel editor; no separate viewer pane. Appears on the graph like any other source.
+- **Notes (tab)** — available on YouTube/PDF sources. Type `@` to link to a thread or another source. Copy from chat preserves markdown, tables, and equations.
+- **Summaries** — generated once per source and stored in the DB. Use **Regenerate** to force a new one.
+- **Graph** — home screen (`/`). Three levels: all spaces → sources in a space → threads & cards for one source. Click a source card to drill in; drag nodes or add **Area** frames to organize. Positions save automatically.
+- **Navigation** — selected space, active source, and view mode persist in `localStorage` across refreshes.

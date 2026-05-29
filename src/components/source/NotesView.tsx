@@ -6,19 +6,63 @@ import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
+import { Mathematics } from "@tiptap/extension-mathematics";
+import { Table, TableRow, TableHeader, TableCell } from "@tiptap/extension-table";
 import { ResizableImage } from "@/components/source/ResizableImage";
 import { ThreadRef } from "@/components/source/ThreadRef";
+import { SourceRef } from "@/components/source/SourceRef";
 import { formatTime } from "@/lib/utils";
+
+/**
+ * Extract TeX source from a KaTeX-rendered HTML element.
+ *
+ * We rely on the `data-latex` attribute that ChatMarkdown stamps onto every
+ * `.katex` span after render (see ChatMarkdown.tsx).  Chrome strips the MathML
+ * subtree (including the original <annotation> element) from clipboard HTML,
+ * but plain HTML data-* attributes are preserved.
+ */
+function extractLatexFromKatex(el: Element): string | null {
+  return (el as HTMLElement).dataset.latex?.trim() ?? null;
+}
+
+/**
+ * Convert KaTeX-rendered HTML in a clipboard fragment to Tiptap math node HTML
+ * so that pasted math is recognised by the Mathematics extension.
+ *
+ * - `.katex-display` wrappers → <div data-type="block-math" data-latex="…">
+ * - plain `.katex` spans (inline) → <span data-type="inline-math" data-latex="…">
+ */
+function convertKatexNodes(root: Element): void {
+  // Block math first (contains inline .katex — process outer first to avoid double-processing)
+  root.querySelectorAll(".katex-display").forEach((display) => {
+    const latex = extractLatexFromKatex(display);
+    if (latex == null) return;
+    const replacement = document.createElement("div");
+    replacement.setAttribute("data-type", "block-math");
+    replacement.setAttribute("data-latex", latex);
+    display.replaceWith(replacement);
+  });
+  // Remaining inline .katex spans
+  root.querySelectorAll(".katex").forEach((span) => {
+    const latex = extractLatexFromKatex(span);
+    if (latex == null) return;
+    const replacement = document.createElement("span");
+    replacement.setAttribute("data-type", "inline-math");
+    replacement.setAttribute("data-latex", latex);
+    span.replaceWith(replacement);
+  });
+}
 
 export interface NotesViewHandle {
   insertCitation: (offset: number) => void;
 }
 
 interface MentionItem {
+  kind: "thread" | "source";
   id: string;
   title: string;
-  sourceTitle: string;
-  sourceType: string;
+  subtitle: string; // source title (for threads) or type label (for sources)
+  sourceType: string; // icon hint: "youtube" | "pdf" | "note" | ""
 }
 
 interface MentionState {
@@ -38,6 +82,7 @@ interface Props {
   onSeekTo: (ms: number) => void;
   onSwitchToTranscript: () => void;
   onOpenThread: (questionId: string) => void;
+  onOpenSource?: (sourceId: string) => void;
 }
 
 function BubbleBtn({
@@ -59,7 +104,7 @@ function BubbleBtn({
 }
 
 const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
-  { content, onChange, saving, saveError, onSeekTo, onSwitchToTranscript, onOpenThread },
+  { content, onChange, saving, saveError, onSeekTo, onSwitchToTranscript, onOpenThread, onOpenSource },
   ref
 ) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -71,9 +116,31 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
   const [mentionIndex, setMentionIndex] = useState(0);
 
   useEffect(() => {
-    fetch("/api/questions")
-      .then((r) => r.json())
-      .then((rows: MentionItem[]) => setAllChats(Array.isArray(rows) ? rows : []))
+    Promise.all([
+      fetch("/api/questions").then((r) => r.json()),
+      fetch("/api/sources").then((r) => r.json()),
+    ])
+      .then(([threads, srcs]) => {
+        const threadItems: MentionItem[] = Array.isArray(threads)
+          ? threads.map((t: { id: string; title: string; sourceTitle?: string; sourceType?: string }) => ({
+              kind: "thread" as const,
+              id: t.id,
+              title: t.title,
+              subtitle: t.sourceTitle ?? "",
+              sourceType: t.sourceType ?? "",
+            }))
+          : [];
+        const sourceItems: MentionItem[] = Array.isArray(srcs)
+          ? srcs.map((s: { id: string; title: string; type: string }) => ({
+              kind: "source" as const,
+              id: s.id,
+              title: s.title,
+              subtitle: s.type === "youtube" ? "YouTube" : s.type === "note" ? "Note" : "PDF",
+              sourceType: s.type,
+            }))
+          : [];
+        setAllChats([...threadItems, ...sourceItems]);
+      })
       .catch(() => {});
   }, []);
 
@@ -81,7 +148,7 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
     if (!mention) return [];
     const q = mention.query.toLowerCase();
     const list = q
-      ? allChats.filter((c) => c.title.toLowerCase().includes(q) || c.sourceTitle.toLowerCase().includes(q))
+      ? allChats.filter((c) => c.title.toLowerCase().includes(q) || c.subtitle.toLowerCase().includes(q))
       : allChats;
     return list.slice(0, 8);
   }, [mention, allChats]);
@@ -108,14 +175,15 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
   function selectMention(item: MentionItem) {
     if (!editor || !mention) return;
     const label = item.title.length > 40 ? item.title.slice(0, 40) + "…" : item.title;
+    const nodeContent =
+      item.kind === "source"
+        ? { type: "sourceRef", attrs: { sourceId: item.id, label } }
+        : { type: "threadRef", attrs: { questionId: item.id, label } };
     editor
       .chain()
       .focus()
       .deleteRange({ from: mention.from, to: mention.to })
-      .insertContent([
-        { type: "threadRef", attrs: { questionId: item.id, label } },
-        { type: "text", text: " " },
-      ])
+      .insertContent([nodeContent, { type: "text", text: " " }])
       .run();
     setMention(null);
   }
@@ -130,7 +198,13 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
       // when loading saved notes — they'd insert fine but vanish on refresh.
       ResizableImage.configure({ inline: false, allowBase64: true }),
       ThreadRef,
+      SourceRef,
       Link.configure({ openOnClick: false }),
+      Mathematics,
+      Table.configure({ resizable: false }),
+      TableRow,
+      TableHeader,
+      TableCell,
       Placeholder.configure({
         placeholder:
           "Start writing… Type # for heading, @ to reference a chat, ref → on transcript chunks for timestamps.",
@@ -141,8 +215,11 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
     editorProps: {
       attributes: { class: "notes-prosemirror" },
       handlePaste: (view, event) => {
-        const items = event.clipboardData?.items;
-        if (!items) return false;
+        const data = event.clipboardData;
+        if (!data) return false;
+
+        // 1. Image file paste (takes priority)
+        const items = data.items;
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
           if (item.kind === "file" && item.type.startsWith("image/")) {
@@ -154,6 +231,23 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
             }
           }
         }
+
+        // 2. HTML paste — convert KaTeX spans to Tiptap math nodes before Tiptap processes it
+        const html = data.getData("text/html");
+        if (html) {
+          const hasKatex = html.includes("katex");
+          if (hasKatex) {
+            const wrapper = document.createElement("div");
+            wrapper.innerHTML = html;
+            convertKatexNodes(wrapper);
+            const cleaned = wrapper.innerHTML;
+            // Re-inject as HTML paste so Tiptap can parse the converted nodes
+            view.pasteHTML(cleaned);
+            event.preventDefault();
+            return true;
+          }
+        }
+
         return false;
       },
     },
@@ -193,11 +287,18 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
     if (!dom) return;
     const handler = (e: MouseEvent) => {
       const target = e.target as Element;
-      // Thread reference chip (custom node)
-      const ref = target.closest?.("[data-thread-ref]");
-      if (ref) {
-        const qid = ref.getAttribute("data-question-id");
+      // Thread reference chip
+      const threadRef = target.closest?.("[data-thread-ref]");
+      if (threadRef) {
+        const qid = threadRef.getAttribute("data-question-id");
         if (qid) { e.preventDefault(); onOpenThread(qid); }
+        return;
+      }
+      // Source reference chip
+      const sourceRef = target.closest?.("[data-source-ref]");
+      if (sourceRef) {
+        const sid = sourceRef.getAttribute("data-source-id");
+        if (sid) { e.preventDefault(); onOpenSource?.(sid); }
         return;
       }
       const a = target.closest("a");
@@ -335,25 +436,34 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
         >
           <div className="px-3 py-1.5" style={{ borderBottom: "1px solid var(--border)" }}>
             <span className="type-mono" style={{ fontSize: "0.58rem", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted)" }}>
-              Reference a chat
+              Reference a thread or source
             </span>
           </div>
-          {filteredChats.map((c, i) => (
-            <button
-              key={c.id}
-              onMouseDown={(e) => { e.preventDefault(); selectMention(c); }}
-              onMouseEnter={() => setMentionIndex(i)}
-              className="w-full text-left px-3 py-2 flex flex-col gap-0.5 transition-colors"
-              style={{ background: i === mentionIndex ? "var(--active-row)" : "transparent" }}
-            >
-              <span className="text-xs leading-snug" style={{ color: "var(--foreground)", wordBreak: "break-word" }}>
-                {c.title}
-              </span>
-              <span className="type-mono" style={{ fontSize: "0.58rem", color: "var(--muted)", letterSpacing: "0.02em" }}>
-                {c.sourceType === "youtube" ? "▶" : "📄"} {c.sourceTitle}
-              </span>
-            </button>
-          ))}
+          {filteredChats.map((c, i) => {
+            const icon = c.kind === "source"
+              ? (c.sourceType === "youtube" ? "▶" : c.sourceType === "note" ? "✏" : "📄")
+              : (c.sourceType === "youtube" ? "▶" : c.sourceType === "note" ? "✏" : "📄");
+            return (
+              <button
+                key={`${c.kind}-${c.id}`}
+                onMouseDown={(e) => { e.preventDefault(); selectMention(c); }}
+                onMouseEnter={() => setMentionIndex(i)}
+                className="w-full text-left px-3 py-2 flex flex-col gap-0.5 transition-colors"
+                style={{ background: i === mentionIndex ? "var(--active-row)" : "transparent" }}
+              >
+                <span className="text-xs leading-snug" style={{ color: "var(--foreground)", wordBreak: "break-word" }}>
+                  {c.title}
+                </span>
+                <span className="type-mono flex items-center gap-1" style={{ fontSize: "0.58rem", color: "var(--muted)", letterSpacing: "0.02em" }}>
+                  <span>{icon}</span>
+                  <span>{c.subtitle}</span>
+                  {c.kind === "source" && (
+                    <span style={{ color: "#5A7A56", marginLeft: 2 }}>source</span>
+                  )}
+                </span>
+              </button>
+            );
+          })}
         </div>
           );
         })(),

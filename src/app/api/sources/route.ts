@@ -55,7 +55,14 @@ export async function POST(req: NextRequest) {
   }
 
   const { type, title, youtubeUrl, spaceId } = await req.json();
-  if (!title || type !== "youtube" || !youtubeUrl) return NextResponse.json({ error: "type, title, youtubeUrl required" }, { status: 400 });
+  if (!title || !type) return NextResponse.json({ error: "type and title required" }, { status: 400 });
+
+  if (type === "note") {
+    const [row] = await db.insert(sources).values({ type: "note", title, spaceId: spaceId || null }).returning();
+    return NextResponse.json(row, { status: 201 });
+  }
+
+  if (type !== "youtube" || !youtubeUrl) return NextResponse.json({ error: "type, title, youtubeUrl required" }, { status: 400 });
 
   const videoId = extractVideoId(youtubeUrl);
   if (!videoId) return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });

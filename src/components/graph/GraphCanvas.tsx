@@ -61,12 +61,24 @@ interface Props {
   source?: Source | null;
   questions?: Question[];
   cards?: KnowledgeCard[];
+  drillInTransition?: boolean;
+  onDrillInComplete?: () => void;
+  onPrefetchSource?: (source: Source) => void;
+  onEnsureSourceGraphReady?: (sourceId: string) => Promise<{ questions: Question[]; cards: KnowledgeCard[]; source?: Source }>;
   selectedNode: SelectedNode | null;
   onSelectNode: (node: SelectedNode) => void;
   onSelectSpace: (spaceId: string) => void;
-  onSelectSource: (source: Source) => void;
+  onSelectSource: (
+    source: Source,
+    opts?: {
+      drillIn?: boolean;
+      graphData?: { questions: Question[]; cards: KnowledgeCard[]; source?: Source };
+      sourceSize?: { w: number; h: number };
+    },
+  ) => void;
   onOpenViewer: () => void;
   onGraphRefresh: () => void;
+  onLayoutPersisted?: (graphLayout: string) => void;
 }
 
 // Layout sizes — keep source the same size at L3 as it is in clusters (L1) so the
@@ -165,7 +177,7 @@ function layoutLevel2(sources: Source[]): { nodes: Node[]; edges: Edge[] } {
       id: `source-${s.id}`,
       type: "source",
       position: { x: col * (SRC_W + colGap), y: row * (SRC_H + rowGap) },
-      data: {},
+      data: { compact: true },
     };
   });
   return { nodes, edges: [] };
@@ -297,11 +309,10 @@ function layoutLevel1(spaces: Space[], sources: Source[]): { nodes: Node[]; edge
 }
 
 export default function GraphCanvas(props: Props) {
-  // Re-mount the provider tree on every level/source change so xyflow's internal viewport
-  // state resets cleanly; otherwise the previous viewport leaks into the new layout.
-  const remountKey = `L${props.level}-${props.source?.id ?? "all"}`;
+  // Keep one React Flow instance so the drill-in camera animation continues seamlessly
+  // from L2 → L3 without a remount/jump.
   return (
-    <ReactFlowProvider key={remountKey}>
+    <ReactFlowProvider key="graph">
       <div style={{ width: "100%", height: "100%", position: "relative" }}>
         <GraphCanvasInner {...props} />
       </div>
@@ -309,31 +320,41 @@ export default function GraphCanvas(props: Props) {
   );
 }
 
-// At L3, the source is normalized to world (0,0). We pre-compute the viewport so that
-// world (0,0) lands at the screen center at zoom 1.6 on the very first paint — eliminating
-// the "default viewport flash" before useLayoutEffect runs.
-function computeDefaultViewport(level: 1 | 2 | 3): { x: number; y: number; zoom: number } | undefined {
-  if (level !== 3 || typeof window === "undefined") return undefined;
-  // Approximate the graph container size for the first-paint viewport. The right panel
-  // width is constant (see RightPanel.tsx) so this estimate is stable across all levels.
-  const w = window.innerWidth - 240 /* sidebar */ - 380 /* right panel */;
-  const h = window.innerHeight - 44 /* header */;
-  return { x: w / 2, y: h / 2, zoom: DRILL_IN_ZOOM };
-}
-
 function GraphCanvasInner({
   level, spaces, sources, source, questions = [], cards = [],
+  drillInTransition = false, onDrillInComplete, onPrefetchSource, onEnsureSourceGraphReady,
   selectedNode, onSelectNode, onSelectSpace, onSelectSource, onOpenViewer, onGraphRefresh,
+  onLayoutPersisted,
 }: Props) {
   const reactFlow = useReactFlow();
+  const containerRef = useRef<HTMLDivElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [deleting, setDeleting] = useState(false);
-  // While zooming into a source, fade out everything except the clicked node.
   const [zoomingIntoId, setZoomingIntoId] = useState<string | null>(null);
-  // Tracks whether the initial camera-fit has run for this mount.
+  const [playL3Appear, setPlayL3Appear] = useState(false);
   const didInitCameraRef = useRef(false);
+  const drillCameraAppliedRef = useRef(false);
+  const suppressFitViewRef = useRef(false);
+  const drillSourceSizeRef = useRef<{ w: number; h: number } | null>(null);
+  const l3LayoutReadyRef = useRef(false);
+  const layoutCacheRef = useRef<{ sourceId: string; graphLayout: string | null }>({
+    sourceId: "",
+    graphLayout: null,
+  });
+  const prevLevelRef = useRef(level);
+
+  // Reset camera init when navigating between levels — but not mid drill-in.
+  useEffect(() => {
+    if (prevLevelRef.current !== level) {
+      if (!drillInTransition && !suppressFitViewRef.current) {
+        didInitCameraRef.current = false;
+        drillCameraAppliedRef.current = false;
+      }
+      prevLevelRef.current = level;
+    }
+  }, [level, drillInTransition]);
 
   // Persist user-dragged node positions + custom areas.
   // L3 (a source's graph) is saved to the DB on the source row so it syncs across devices.
@@ -344,9 +365,14 @@ function GraphCanvasInner({
   // Returns { positions, areas }. Handles the legacy format where graphLayout was a bare
   // positions map (no `positions`/`areas` keys).
   const loadLayout = useCallback((): { positions: Record<string, { x: number; y: number }>; areas: AreaData[] } => {
-    if (level === 3 && source?.graphLayout) {
+    if (level === 3 && source) {
+      const raw =
+        layoutCacheRef.current.sourceId === source.id
+          ? layoutCacheRef.current.graphLayout ?? source.graphLayout
+          : source.graphLayout;
+      if (!raw) return { positions: {}, areas: [] };
       try {
-        const parsed = JSON.parse(source.graphLayout);
+        const parsed = JSON.parse(raw);
         if (parsed && (parsed.positions || parsed.areas)) {
           return { positions: parsed.positions ?? {}, areas: parsed.areas ?? [] };
         }
@@ -381,17 +407,22 @@ function GraphCanvasInner({
     });
 
     if (level === 3 && source) {
+      const graphLayout = JSON.stringify({ positions, areas });
+      layoutCacheRef.current = { sourceId: source.id, graphLayout };
+      // Defer parent state sync — persistLayout is often called from inside a setNodes
+      // updater (e.g. onNodeDragStop), and updating Home during that render is illegal.
+      queueMicrotask(() => onLayoutPersisted?.(graphLayout));
       fetch(`/api/sources/${source.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ graphLayout: JSON.stringify({ positions, areas }) }),
+        body: JSON.stringify({ graphLayout }),
       }).catch(() => {});
       return;
     }
     if (posKey) {
       try { window.localStorage.setItem(posKey, JSON.stringify(positions)); } catch { /* ignore */ }
     }
-  }, [level, source, posKey]);
+  }, [level, source, posKey, onLayoutPersisted]);
 
   const requestDelete = useCallback((nodeType: PendingDelete["nodeType"], id: string, label: string) => {
     setPendingDelete({ nodeType, id, label });
@@ -415,7 +446,7 @@ function GraphCanvasInner({
   const renameArea = useCallback((id: string, label: string) => {
     setNodes((prev) => {
       const next = prev.map((n) => (n.id === id ? { ...n, data: { ...n.data, label } } : n));
-      persistLayout(next);
+      queueMicrotask(() => persistLayout(next));
       return next;
     });
   }, [setNodes, persistLayout]);
@@ -423,7 +454,7 @@ function GraphCanvasInner({
   const deleteArea = useCallback((id: string) => {
     setNodes((prev) => {
       const next = prev.filter((n) => n.id !== id);
-      persistLayout(next);
+      queueMicrotask(() => persistLayout(next));
       return next;
     });
   }, [setNodes, persistLayout]);
@@ -457,7 +488,7 @@ function GraphCanvasInner({
     };
     setNodes((prev) => {
       const next = [buildAreaNode(area), ...prev];
-      persistLayout(next);
+      queueMicrotask(() => persistLayout(next));
       return next;
     });
   }, [reactFlow, setNodes, buildAreaNode, persistLayout]);
@@ -467,15 +498,30 @@ function GraphCanvasInner({
     onNodesChange(changes);
     const resizeEnded = changes.some((c) => c.type === "dimensions" && c.resizing === false);
     if (resizeEnded) {
-      setTimeout(() => setNodes((curr) => { persistLayout(curr); return curr; }), 0);
+      queueMicrotask(() => persistLayout(reactFlow.getNodes()));
     }
-  }, [onNodesChange, setNodes, persistLayout]);
+  }, [onNodesChange, reactFlow, persistLayout]);
 
-  // Build raw nodes/edges based on level, then enrich data with handlers
+  // Build raw nodes/edges based on level, then enrich data with handlers.
+  // Depend on source id only — not graphLayout — so drag-persist doesn't rebuild the graph.
+  const sourceId = source?.id;
   useEffect(() => {
+    if (level !== 3) l3LayoutReadyRef.current = false;
+
+    if (level === 3 && sourceId && source) {
+      if (layoutCacheRef.current.sourceId !== sourceId || drillInTransition) {
+        layoutCacheRef.current = { sourceId, graphLayout: source.graphLayout ?? null };
+      }
+    }
+
     let built: { nodes: Node[]; edges: Edge[] };
     if (level === 3) {
-      if (!source) { setNodes([]); setEdges([]); return; }
+      if (!source) {
+        setNodes([]);
+        setEdges([]);
+        l3LayoutReadyRef.current = false;
+        return;
+      }
       built = layoutLevel3(source, questions, cards);
     } else if (level === 2) {
       built = layoutLevel2(sources);
@@ -547,20 +593,71 @@ function GraphCanvasInner({
     const areaNodes = (level === 3 ? areas : []).map(buildAreaNode);
     setNodes([...areaNodes, ...positioned]);
     setEdges(built.edges);
-  }, [level, spaces, sources, source, questions, cards]); // eslint-disable-line react-hooks/exhaustive-deps
+    l3LayoutReadyRef.current = level === 3;
+  }, [level, spaces, sources, sourceId, questions, cards, drillInTransition]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Drive camera for the L1/L2 → L3 transition.
-  // The L3 layout is normalized so the source center sits at world (0, 0), and `defaultViewport`
-  // already places that point at the screen center at DRILL_IN_ZOOM. So on first paint the
-  // L3 source is exactly where the L1 zoom-in animation just ended — no snap needed.
-  // We just trigger a smooth fitView outward to reveal the questions/cards.
+  // Play the L3 appear animation once per entry — not on layout persist / area drag.
+  useEffect(() => {
+    if (level !== 3 || drillInTransition) {
+      const raf = requestAnimationFrame(() => setPlayL3Appear(false));
+      return () => cancelAnimationFrame(raf);
+    }
+    const raf = requestAnimationFrame(() => {
+      setPlayL3Appear(true);
+      window.setTimeout(() => setPlayL3Appear(false), 900);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [level, drillInTransition, sourceId]);
+
+  // Drive camera on level entry.
   useLayoutEffect(() => {
     if (nodes.length === 0) return;
-    if (didInitCameraRef.current) return;
+    // Node-building useEffect runs after paint; wait until L3 layout is actually mounted.
+    if (level === 3 && !l3LayoutReadyRef.current) return;
+
+    if (level === 3 && drillInTransition) {
+      if (!drillCameraAppliedRef.current) {
+        const srcNode = nodes.find((n) => n.id === `source-${source?.id}`);
+        if (!srcNode) return;
+
+        // 1. Snap the viewport so the source stays exactly where the zoom-in left it —
+        //    invisible, because the source's screen position doesn't change.
+        const el = containerRef.current;
+        if (el) {
+          const { width, height } = el.getBoundingClientRect();
+          const { zoom } = reactFlow.getViewport();
+          const internal = reactFlow.getInternalNode?.(srcNode.id);
+          const size = drillSourceSizeRef.current;
+          const w = internal?.measured?.width ?? size?.w ?? SRC_W;
+          const h = internal?.measured?.height ?? size?.h ?? SRC_H;
+          const centerX = srcNode.position.x + w / 2;
+          const centerY = srcNode.position.y + h / 2;
+          reactFlow.setViewport(
+            { x: width / 2 - centerX * zoom, y: height / 2 - centerY * zoom, zoom },
+            { duration: 0 },
+          );
+        }
+        drillCameraAppliedRef.current = true;
+        didInitCameraRef.current = true;
+        suppressFitViewRef.current = false;
+        drillSourceSizeRef.current = null;
+        // Defer to the next frame: drop the fade (so the L2 grid doesn't flash back) and
+        // smoothly zoom out to reveal the questions/cards around the source.
+        requestAnimationFrame(() => {
+          setZoomingIntoId(null);
+          reactFlow.fitView({ duration: 600, padding: 0.3, maxZoom: L3_MAX_ZOOM });
+        });
+        onDrillInComplete?.();
+      }
+      return;
+    }
+
+    if (didInitCameraRef.current || suppressFitViewRef.current) return;
     didInitCameraRef.current = true;
 
     if (level === 3) {
-      // Defer one frame so the L3 children have a chance to mount before fitView measures.
+      // Sync fit before paint to avoid a top-left flash, then animate zoom-out.
+      reactFlow.fitView({ duration: 0, padding: 0.3, maxZoom: L3_MAX_ZOOM });
       const raf = requestAnimationFrame(() => {
         reactFlow.fitView({ duration: 700, padding: 0.3, maxZoom: L3_MAX_ZOOM });
       });
@@ -568,7 +665,16 @@ function GraphCanvasInner({
     } else {
       reactFlow.fitView({ duration: 300, padding: 0.2 });
     }
-  }, [nodes, level, reactFlow]);
+  }, [nodes, level, reactFlow, drillInTransition, onDrillInComplete, source]);
+
+  const onNodeMouseEnter: NodeMouseHandler = useCallback(
+    (_e, node) => {
+      if (node.type !== "source" || level === 3 || zoomingIntoId) return;
+      const src = sources.find((s) => s.id === node.id.replace("source-", ""));
+      if (src) onPrefetchSource?.(src);
+    },
+    [level, sources, zoomingIntoId, onPrefetchSource],
+  );
 
   const onNodeClick: NodeMouseHandler = useCallback(
     (_e, node) => {
@@ -582,30 +688,45 @@ function GraphCanvasInner({
       if (node.type === "source") {
         const sourceId = node.id.replace("source-", "");
         if (level === 3) {
-          onOpenViewer();
+          // Notes have no viewer — their editor lives in the right panel.
+          const isNote = (source?.type === "note") || (sources.find((s) => s.id === sourceId)?.type === "note");
+          if (!isNote) onOpenViewer();
           return;
         }
         const src = sources.find((s) => s.id === sourceId);
         if (!src) return;
 
-        // Zoom-into-source transition: animate camera toward the clicked node,
-        // fade the rest of the graph, then drill in.
+        onPrefetchSource?.(src);
+
         const internal = reactFlow.getInternalNode?.(node.id);
         const abs = internal?.internals?.positionAbsolute ?? node.position;
-        const w = internal?.measured?.width ?? node.width ?? 165;
-        const h = internal?.measured?.height ?? node.height ?? 180;
+        const w = internal?.measured?.width ?? node.width ?? SRC_W;
+        const h = internal?.measured?.height ?? node.height ?? SRC_H;
         const cx = abs.x + w / 2;
         const cy = abs.y + h / 2;
         const duration = 380;
-        reactFlow.setCenter(cx, cy, { zoom: DRILL_IN_ZOOM, duration });
+        const currentZoom = reactFlow.getViewport().zoom;
+        // Never zoom out during the approach — only pan, or zoom in toward DRILL_IN_ZOOM.
+        const targetZoom = currentZoom >= DRILL_IN_ZOOM ? currentZoom : DRILL_IN_ZOOM;
+        suppressFitViewRef.current = true;
+        drillCameraAppliedRef.current = false;
+        drillSourceSizeRef.current = { w, h };
+        reactFlow.setCenter(cx, cy, { zoom: targetZoom, duration });
         setZoomingIntoId(node.id);
-        setTimeout(() => onSelectSource(src), duration);
+
+        // Keep the fade on until the L3 layout is mounted (cleared in the camera effect).
+        Promise.all([
+          new Promise<void>((r) => setTimeout(r, duration)),
+          onEnsureSourceGraphReady?.(src.id) ?? Promise.resolve({ questions: [], cards: [], source: undefined }),
+        ]).then(([, graphData]) => {
+          onSelectSource(src, { drillIn: true, graphData, sourceSize: { w, h } });
+        });
         return;
       }
       if (node.type === "question") onSelectNode({ type: "question", id: node.id.replace("question-", "") });
       else if (node.type === "card") onSelectNode({ type: "card", id: node.id.replace("card-", "") });
     },
-    [level, sources, onSelectSpace, onSelectSource, onOpenViewer, onSelectNode, reactFlow, zoomingIntoId]
+    [level, sources, source?.type, onSelectSpace, onSelectSource, onOpenViewer, onSelectNode, reactFlow, zoomingIntoId, onPrefetchSource, onEnsureSourceGraphReady]
   );
 
   const styledNodes = useMemo(
@@ -628,8 +749,8 @@ function GraphCanvasInner({
           (selectedNode?.type === "question" && n.id === `question-${selectedNode.id}`) ||
           (selectedNode?.type === "card" && n.id === `card-${selectedNode.id}`);
 
-        // Stagger-fade L3 non-source nodes on mount so they appear as the camera zooms out.
-        const isL3Child = level === 3 && (n.type === "question" || n.type === "card");
+        // During drill-in, children arrive with the layout — skip stagger so nothing animates twice.
+        const isL3Child = playL3Appear && (n.type === "question" || n.type === "card");
         const appearAnim = isL3Child ? "node-appear 500ms ease 250ms both" : undefined;
 
         return {
@@ -643,10 +764,10 @@ function GraphCanvasInner({
           },
         };
       }),
-    [nodes, selectedNode, zoomingIntoId, level]
+    [nodes, selectedNode, zoomingIntoId, playL3Appear]
   );
 
-  // Fade edges during zoom-into-source; stagger-fade edges on L3 entry.
+  // Fade edges during zoom-into-source; stagger-fade edges on L3 entry only.
   const styledEdges = useMemo(() => {
     if (zoomingIntoId) {
       return edges.map((e) => ({
@@ -654,28 +775,28 @@ function GraphCanvasInner({
         style: { ...(e.style ?? {}), opacity: 0, transition: "opacity 320ms ease" },
       }));
     }
-    if (level === 3) {
+    if (playL3Appear) {
       return edges.map((e) => ({
         ...e,
         style: { ...(e.style ?? {}), animation: "node-appear 500ms ease 350ms both" },
       }));
     }
     return edges;
-  }, [edges, zoomingIntoId, level]);
+  }, [edges, zoomingIntoId, playL3Appear]);
 
   return (
-    <>
+    <div ref={containerRef} style={{ width: "100%", height: "100%", position: "relative" }}>
       <ReactFlow
         nodes={styledNodes}
         edges={styledEdges}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
-        onNodeDragStop={() => setNodes((curr) => { persistLayout(curr); return curr; })}
+        onNodeMouseEnter={onNodeMouseEnter}
+        onNodeDragStop={() => persistLayout(reactFlow.getNodes())}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         elevateNodesOnSelect={false}
-        defaultViewport={computeDefaultViewport(level)}
         style={{ background: "var(--background)" }}
       >
         <Background variant={BackgroundVariant.Dots} color="#C8BCA8" gap={22} size={1.2} />
@@ -754,6 +875,6 @@ function GraphCanvasInner({
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }

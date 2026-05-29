@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import QuestionPanel from "@/components/panels/QuestionPanel";
 import KnowledgeCardPanel from "@/components/panels/KnowledgeCardPanel";
 import PDFSelectionPanel from "@/components/panels/PDFSelectionPanel";
+import NotePanel from "@/components/panels/NotePanel";
 import TranscriptWithChat from "@/components/source/TranscriptWithChat";
 import PdfRightPanel from "@/components/source/PdfRightPanel";
 import type { Source, SelectedNode } from "@/lib/types";
@@ -24,21 +25,24 @@ interface Props {
   onSeekTo: (ms: number) => void;
   onSelectNode: (node: SelectedNode | null) => void;
   onGraphRefresh: () => void;
+  onActiveSourceUpdate: (updates: Partial<Source>) => void;
   pdfSelection: { text: string; page: number; rects: { x:number; y:number; w:number; h:number }[] } | null;
   onClearPdfSelection: () => void;
   onOpenThread: (questionId: string) => void;
+  onOpenSource: (sourceId: string) => void;
   pendingInitialMessage: { questionId: string; message: string; passage?: string; page?: number } | null;
   onPdfQuestionCreated: (questionId: string, message: string, passage: string, page: number) => void;
 }
 
 export default function RightPanel({
   activeSource, selectedNode, activeChunkIdx, viewMode, onSeekTo,
-  onSelectNode, onGraphRefresh,
-  pdfSelection, onClearPdfSelection, onOpenThread,
+  onSelectNode, onGraphRefresh, onActiveSourceUpdate,
+  pdfSelection, onClearPdfSelection, onOpenThread, onOpenSource,
   pendingInitialMessage, onPdfQuestionCreated,
 }: Props) {
   const isYoutube = activeSource?.type === "youtube";
   const isPdf = activeSource?.type === "pdf";
+  const isNote = activeSource?.type === "note";
 
   // Width state — restored from localStorage on mount, persisted on drag release.
   const [width, setWidth] = useState<number>(RIGHT_PANEL_DEFAULT_WIDTH);
@@ -122,20 +126,24 @@ export default function RightPanel({
       );
     }
 
-    // YouTube source → always TranscriptWithChat. It also renders the thread view (with the
-    // transcript chunk) when a question node is selected, so creating and reopening a thread
-    // look identical. This must come before the generic question-node branch below.
-    if (isYoutube && activeSource?.transcript) {
+    // YouTube source → always TranscriptWithChat (even without a transcript, so Notes/Summary
+    // and the in-tab "Retry transcript fetch" affordance stay reachable). It also renders the
+    // thread view when a question node is selected, so creating and reopening a thread look
+    // identical. This must come before the generic question-node branch below.
+    if (isYoutube && activeSource) {
       return (
         <TranscriptWithChat
           key={activeSource.id}
           sourceId={activeSource.id}
-          rawTranscript={activeSource.transcript}
+          rawTranscript={activeSource.transcript ?? ""}
+          initialSummary={activeSource.summary}
           activeChunkIdx={activeChunkIdx}
           viewMode={viewMode}
           onSeekTo={onSeekTo}
           onGraphRefresh={onGraphRefresh}
           onOpenThread={onOpenThread}
+          onTranscriptUpdated={(transcript) => onActiveSourceUpdate({ transcript })}
+          onOpenSource={onOpenSource}
           externalQuestionId={selectedNode?.type === "question" ? selectedNode.id : null}
           onCloseThread={() => onSelectNode(null)}
         />
@@ -157,6 +165,7 @@ export default function RightPanel({
             initialPage={pending?.page}
             source={activeSource}
             onSummarized={() => { onGraphRefresh(); onSelectNode(null); }}
+            onGraphRefresh={onGraphRefresh}
           />
         </>
       );
@@ -180,7 +189,20 @@ export default function RightPanel({
 
     // PDF source loaded, no selection / no node — show Notes + Summary tabs.
     if (isPdf && activeSource) {
-      return <PdfRightPanel key={activeSource.id} sourceId={activeSource.id} onOpenThread={onOpenThread} />;
+      return (
+        <PdfRightPanel
+          key={activeSource.id}
+          sourceId={activeSource.id}
+          initialSummary={activeSource.summary}
+          onOpenThread={onOpenThread}
+          onOpenSource={onOpenSource}
+        />
+      );
+    }
+
+    // Note source — full-panel markdown editor.
+    if (isNote && activeSource) {
+      return <NotePanel key={activeSource.id} sourceId={activeSource.id} onOpenThread={onOpenThread} onOpenSource={onOpenSource} />;
     }
 
     // L1 / L2 — no active source

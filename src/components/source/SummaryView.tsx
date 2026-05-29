@@ -1,33 +1,90 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
+import ChatMarkdown from "@/components/source/ChatMarkdown";
+
+/** Survives tab unmounts — keyed by sourceId. */
+const summaryCache = new Map<string, string | null>();
 
 interface Props {
   sourceId: string;
+  initialSummary?: string | null;
 }
 
-export default function SummaryView({ sourceId }: Props) {
-  const [summary, setSummary] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+export default function SummaryView({ sourceId, initialSummary }: Props) {
+  const [summary, setSummary] = useState<string | null>(() => {
+    if (summaryCache.has(sourceId)) return summaryCache.get(sourceId)!;
+    return initialSummary ?? null;
+  });
+  const [loading, setLoading] = useState(() => {
+    if (summaryCache.has(sourceId)) return false;
+    return !initialSummary;
+  });
+  const [regenerating, setRegenerating] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback((force = false) => {
-    setLoading(true);
-    setSummary(null);
-    const url = `/api/sources/${sourceId}/summary${force ? "?force=true" : ""}`;
-    fetch(url)
+    if (!force && summaryCache.has(sourceId)) {
+      setSummary(summaryCache.get(sourceId)!);
+      setLoading(false);
+      return;
+    }
+
+    if (force) {
+      setRegenerating(true);
+    } else {
+      setLoading(true);
+    }
+
+    if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+    slowTimerRef.current = setTimeout(() => setGenerating(true), 1500);
+
+    fetch(`/api/sources/${sourceId}/summary${force ? "?force=true" : ""}`)
       .then((r) => r.json())
-      .then((data) => setSummary(data.summary ?? null))
-      .finally(() => setLoading(false));
+      .then((data) => {
+        const s = data.summary ?? null;
+        summaryCache.set(sourceId, s);
+        setSummary(s);
+      })
+      .finally(() => {
+        if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+        slowTimerRef.current = null;
+        setLoading(false);
+        setRegenerating(false);
+        setGenerating(false);
+      });
   }, [sourceId]);
 
-  useEffect(() => { load(); }, [load]);
+  // Resolve on mount / source change / when parent delivers summary from full-source fetch.
+  useEffect(() => {
+    if (summaryCache.has(sourceId)) {
+      setSummary(summaryCache.get(sourceId)!);
+      setLoading(false);
+      setGenerating(false);
+      if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+      return;
+    }
+    if (initialSummary) {
+      summaryCache.set(sourceId, initialSummary);
+      setSummary(initialSummary);
+      setLoading(false);
+      setGenerating(false);
+      if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+      return;
+    }
+    load();
+  }, [sourceId, initialSummary, load]);
 
-  if (loading) {
+  if (loading && !summary) {
+    const label = regenerating || generating ? "Generating summary…" : "Loading summary…";
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center">
-          <div className="text-xs mb-1" style={{ color: "var(--muted)" }}>Generating summary…</div>
-          <div className="text-xs" style={{ color: "var(--muted)" }}>This may take a moment</div>
+          <div className="text-xs mb-1" style={{ color: "var(--muted)" }}>{label}</div>
+          {(regenerating || generating) && (
+            <div className="text-xs" style={{ color: "var(--muted)" }}>This may take a moment</div>
+          )}
         </div>
       </div>
     );
@@ -41,45 +98,20 @@ export default function SummaryView({ sourceId }: Props) {
     );
   }
 
-  const lines = summary.split("\n");
-
   return (
     <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
       <div className="flex items-center justify-end px-4 pt-2 pb-1 shrink-0">
         <button
           onClick={() => load(true)}
-          className="text-xs px-2 py-1 rounded-md transition-opacity hover:opacity-70"
+          disabled={regenerating}
+          className="text-xs px-2 py-1 rounded-md transition-opacity hover:opacity-70 disabled:opacity-40"
           style={{ color: "var(--muted)", background: "transparent" }}
         >
-          ↺ Regenerate
+          {regenerating ? "Regenerating…" : "↺ Regenerate"}
         </button>
       </div>
-      <div className="flex-1 overflow-y-auto px-4 pb-4 min-h-0">
-        {lines.map((line, i) => {
-          if (line.startsWith("## ")) {
-            return (
-              <h3 key={i} className="type-serif font-semibold mt-5 mb-1.5 first:mt-0" style={{ fontSize: "0.9rem", color: "var(--foreground)" }}>
-                {line.slice(3)}
-              </h3>
-            );
-          }
-          if (line.startsWith("- ") || line.startsWith("• ")) {
-            return (
-              <div key={i} className="flex items-start gap-2 mb-1">
-                <span className="shrink-0 mt-1.5 w-1 h-1 rounded-full" style={{ background: "var(--accent)" }} />
-                <p className="text-sm leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-                  {line.slice(2)}
-                </p>
-              </div>
-            );
-          }
-          if (line.trim() === "") return <div key={i} className="h-1" />;
-          return (
-            <p key={i} className="text-sm leading-relaxed mb-1" style={{ color: "var(--text-secondary)" }}>
-              {line}
-            </p>
-          );
-        })}
+      <div className="prose-answer flex-1 overflow-y-auto px-4 pb-4 min-h-0 text-sm" style={{ color: "var(--text-secondary)" }}>
+        <ChatMarkdown content={summary} />
       </div>
     </div>
   );

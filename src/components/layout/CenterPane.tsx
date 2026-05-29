@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { extractVideoId } from "@/lib/youtube";
 import type { Space, Source, Question, KnowledgeCard, SelectedNode } from "@/lib/types";
@@ -11,13 +11,28 @@ const YouTubePlayer = dynamic(() => import("@/components/source/YouTubePlayer"),
 
 interface Props {
   activeSource: (Source & { pdfUrl?: string }) | null;
+  spaces: Space[];
+  allSources: Source[];
+  questions: Question[];
+  cards: KnowledgeCard[];
+  drillInTransition: boolean;
+  onDrillInComplete: () => void;
+  onPrefetchSource: (source: Source) => void;
+  onEnsureSourceGraphReady: (sourceId: string) => Promise<{ questions: Question[]; cards: KnowledgeCard[]; source?: Source }>;
   selectedSpaceId: string | null;
   selectedNode: SelectedNode | null;
   viewMode: "graph" | "viewer";
   onSetViewMode: (mode: "graph" | "viewer") => void;
   onSelectNode: (node: SelectedNode) => void;
   onSelectSpace: (spaceId: string) => void;
-  onSelectSource: (source: Source) => void;
+  onSelectSource: (
+    source: Source,
+    opts?: {
+      drillIn?: boolean;
+      graphData?: { questions: Question[]; cards: KnowledgeCard[]; source?: Source };
+      sourceSize?: { w: number; h: number };
+    },
+  ) => void;
   onGraphRefresh: () => void;
   onActiveChunkIdxChange: (idx: number) => void;
   onRegisterSeek: (fn: (ms: number) => void) => void;
@@ -25,47 +40,26 @@ interface Props {
   onActiveSourceUpdate: (updates: Partial<Source>) => void;
   onClearPdfSelection: () => void;
   pdfSelection: { text: string; page: number; rects: { x:number; y:number; w:number; h:number }[] } | null;
-  refreshKey: number;
 }
 
 export default function CenterPane({
-  activeSource, selectedSpaceId, selectedNode, viewMode, onSetViewMode,
+  activeSource, spaces, allSources, questions, cards,
+  drillInTransition, onDrillInComplete, onPrefetchSource, onEnsureSourceGraphReady,
+  selectedSpaceId, selectedNode, viewMode, onSetViewMode,
   onSelectNode, onSelectSpace, onSelectSource, onGraphRefresh,
   onActiveChunkIdxChange, onRegisterSeek,
   onPdfTextSelect, onClearPdfSelection, onActiveSourceUpdate, pdfSelection,
-  refreshKey,
 }: Props) {
-  const [spaces, setSpaces] = useState<Space[]>([]);
-  const [sources, setSources] = useState<Source[]>([]);
-  const [questions, setQuestions] = useState<Question[]>([]);
-  const [cards, setCards] = useState<KnowledgeCard[]>([]);
 
   const level: 1 | 2 | 3 = activeSource ? 3 : selectedSpaceId ? 2 : 1;
 
-  // Always load spaces
-  useEffect(() => {
-    fetch("/api/spaces").then((r) => r.json()).then(setSpaces);
-  }, [refreshKey]);
-
-  // Load sources scoped to current level
-  useEffect(() => {
-    const url = selectedSpaceId
-      ? `/api/sources?spaceId=${selectedSpaceId}`
-      : "/api/sources";
-    fetch(url).then((r) => r.json()).then(setSources);
-  }, [selectedSpaceId, refreshKey]);
-
-  // At level 3, load questions and cards for the active source
-  useEffect(() => {
-    if (!activeSource) { setQuestions([]); setCards([]); return; }
-    Promise.all([
-      fetch(`/api/questions?sourceId=${activeSource.id}`).then((r) => r.json()),
-      fetch(`/api/knowledge-cards?sourceId=${activeSource.id}`).then((r) => r.json()),
-    ]).then(([qs, cs]) => {
-      setQuestions(qs);
-      setCards(cs);
-    });
-  }, [activeSource, refreshKey]);
+  // Keep the space-filtered list at L3 too — avoids a mid-transition rebuild when activeSource is set.
+  const graphSources = useMemo(() => {
+    if (selectedSpaceId) {
+      return allSources.filter((s) => s.spaceId === selectedSpaceId);
+    }
+    return allSources;
+  }, [allSources, selectedSpaceId]);
 
   const videoId = activeSource?.youtubeUrl ? extractVideoId(activeSource.youtubeUrl) : null;
 
@@ -160,12 +154,14 @@ export default function CenterPane({
     return q?.pdfPage ?? null;
   }, [selectedNode, questions]);
 
-  const isViewer = viewMode === "viewer" && activeSource != null;
+  // Notes have no viewer — their editor is in the right panel. Keep center on graph always.
+  const isViewer = viewMode === "viewer" && activeSource != null && activeSource.type !== "note";
 
   return (
     <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
-      {/* Viewer (PDF / YouTube) — mounted always at level 3 so toggling display doesn't unmount */}
-      {activeSource && (
+      {/* Viewer (PDF / YouTube) — mounted always at level 3 so toggling display doesn't unmount.
+          Notes have no viewer; their editor lives in the right panel. */}
+      {activeSource && activeSource.type !== "note" && (
         <div
           className="absolute inset-0 flex flex-col"
           style={{ display: isViewer ? "flex" : "none", background: "var(--background)", zIndex: 5 }}
@@ -220,16 +216,21 @@ export default function CenterPane({
         <GraphCanvas
           level={level}
           spaces={spaces}
-          sources={sources}
+          sources={graphSources}
           source={activeSource}
           questions={questions}
           cards={cards}
+          drillInTransition={drillInTransition}
+          onDrillInComplete={onDrillInComplete}
+          onPrefetchSource={onPrefetchSource}
+          onEnsureSourceGraphReady={onEnsureSourceGraphReady}
           selectedNode={selectedNode}
           onSelectNode={onSelectNode}
           onSelectSpace={onSelectSpace}
           onSelectSource={onSelectSource}
           onOpenViewer={() => onSetViewMode("viewer")}
           onGraphRefresh={onGraphRefresh}
+          onLayoutPersisted={(graphLayout) => onActiveSourceUpdate({ graphLayout })}
         />
       </div>
     </div>

@@ -8,10 +8,12 @@ type Tab = "notes" | "summary";
 
 interface Props {
   sourceId: string;
+  initialSummary?: string | null;
   onOpenThread: (questionId: string) => void;
+  onOpenSource?: (sourceId: string) => void;
 }
 
-export default function PdfRightPanel({ sourceId, onOpenThread }: Props) {
+export default function PdfRightPanel({ sourceId, initialSummary, onOpenThread, onOpenSource }: Props) {
   const [tab, setTab] = useState<Tab>("notes");
 
   // Notes state
@@ -90,10 +92,16 @@ export default function PdfRightPanel({ sourceId, onOpenThread }: Props) {
           onSeekTo={() => { /* no transcript timestamps in PDFs */ }}
           onSwitchToTranscript={() => { /* no transcript in PDFs */ }}
           onOpenThread={onOpenThread}
+          onOpenSource={onOpenSource}
         />
       )}
 
-      {tab === "summary" && <SummaryView sourceId={sourceId} />}
+      <div
+        className="flex-1 flex flex-col min-h-0 overflow-hidden"
+        style={{ display: tab === "summary" ? "flex" : "none" }}
+      >
+        <SummaryView sourceId={sourceId} initialSummary={initialSummary} />
+      </div>
     </div>
   );
 }
