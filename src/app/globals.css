@@ -39,7 +39,12 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-* { box-sizing: border-box; }
+.workspace-tab-scroll {
+  scrollbar-width: none;
+}
+.workspace-tab-scroll::-webkit-scrollbar {
+  display: none;
+}
 
 /* ── Graph transitions ── */
 @keyframes graph-fade-in {

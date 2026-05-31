@@ -6,19 +6,41 @@ interface Props {
   sourceId: string;
 }
 
+interface TranscriptState {
+  sourceId: string;
+  transcript: string | null;
+  error: string;
+  ready: boolean;
+}
+
 export default function TranscriptView({ sourceId }: Props) {
-  const [transcript, setTranscript] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [state, setState] = useState<TranscriptState>({
+    sourceId: "",
+    transcript: null,
+    error: "",
+    ready: false,
+  });
 
   useEffect(() => {
-    setLoading(true);
+    let cancelled = false;
     fetch(`/api/sources/${sourceId}/transcript`)
       .then((r) => r.json())
-      .then((d) => { setTranscript(d.transcript); setError(d.error ?? ""); })
-      .catch(() => setError("Failed to load transcript"))
-      .finally(() => setLoading(false));
+      .then((d) => {
+        if (!cancelled) {
+          setState({ sourceId, transcript: d.transcript, error: d.error ?? "", ready: true });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setState({ sourceId, transcript: null, error: "Failed to load transcript", ready: true });
+        }
+      });
+    return () => { cancelled = true; };
   }, [sourceId]);
+
+  const loading = state.sourceId !== sourceId || !state.ready;
+  const transcript = state.sourceId === sourceId ? state.transcript : null;
+  const error = state.sourceId === sourceId ? state.error : "";
 
   if (loading) return <p className="text-xs p-4" style={{ color: "var(--muted)" }}>Loading transcript…</p>;
   if (error && !transcript) return <p className="text-xs p-4" style={{ color: "#f87171" }}>{error || "No transcript available"}</p>;

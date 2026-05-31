@@ -6,6 +6,7 @@ import { formatTime } from "@/lib/utils";
 import ChatMarkdown from "@/components/source/ChatMarkdown";
 import SummaryView from "@/components/source/SummaryView";
 import NotesView, { type NotesViewHandle } from "@/components/source/NotesView";
+import { useSourceNotes } from "@/hooks/useSourceNotes";
 import type { Message } from "@/lib/types";
 
 type Tab = "transcript" | "summary" | "notes";
@@ -118,15 +119,13 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   const [activeQuestionId, setActiveQuestionId] = useState<string | null>(null);
   const [questionInput, setQuestionInput] = useState("");
   const [creating, setCreating] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
   const [streamBuffer, setStreamBuffer] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [followupInput, setFollowupInput] = useState("");
   const [summarizing, setSummarizing] = useState(false);
 
   // Notes state
-  const [notes, setNotes] = useState("");
-  const [notesLoaded, setNotesLoaded] = useState(false);
+  const { notes, loaded: notesLoaded, setNotes } = useSourceNotes(sourceId);
   const [notesSaving, setNotesSaving] = useState(false);
   const [notesSaveError, setNotesSaveError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -164,40 +163,40 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
       .catch(() => {});
   }, [sourceId, chunks]);
 
-  // Load notes
-  useEffect(() => {
-    setNotesLoaded(false);
-    fetch(`/api/sources/${sourceId}/notes`)
-      .then((r) => r.json())
-      .then((data) => { setNotes(data.notes ?? ""); setNotesLoaded(true); })
-      .catch(() => setNotesLoaded(true));
-  }, [sourceId]);
+  const threadQuestionId = externalQuestionId ?? activeQuestionId;
+  const threadChunkIdx = externalQuestionId
+    ? (() => {
+        const entry = Object.entries(chunkQuestions).find(([, qid]) => qid === externalQuestionId);
+        return entry ? Number(entry[0]) : null;
+      })()
+    : activeQuestionChunkIdx;
+  const threadView: View = externalQuestionId ? "chat" : view;
 
   // Load messages when opening an existing thread
-  useEffect(() => {
-    if (!activeQuestionId) { setMessages([]); return; }
-    fetch(`/api/questions/${activeQuestionId}/messages`)
-      .then((r) => r.json())
-      .then((msgs: Message[]) => setMessages(msgs))
-      .catch(() => {});
-  }, [activeQuestionId]);
+  const [messagesState, setMessagesState] = useState<{ questionId: string | null; messages: Message[] }>({
+    questionId: null,
+    messages: [],
+  });
+  const messages = threadQuestionId && messagesState.questionId === threadQuestionId
+    ? messagesState.messages
+    : [];
 
-  // Open a thread when selected from the graph — show the same chunk-quote chat view.
   useEffect(() => {
-    if (!externalQuestionId) return;
-    // Find the chunk this question belongs to (reverse lookup in chunkQuestions).
-    const ciEntry = Object.entries(chunkQuestions).find(([, qid]) => qid === externalQuestionId);
-    setActiveQuestionChunkIdx(ciEntry ? Number(ciEntry[0]) : null);
-    setActiveQuestionId(externalQuestionId);
-    setStreamBuffer("");
-    setFollowupInput("");
-    setView("chat");
-  }, [externalQuestionId, chunkQuestions]);
+    if (!threadQuestionId) return;
+    let cancelled = false;
+    fetch(`/api/questions/${threadQuestionId}/messages`)
+      .then((r) => r.json())
+      .then((msgs: Message[]) => {
+        if (!cancelled) setMessagesState({ questionId: threadQuestionId, messages: msgs });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [threadQuestionId]);
 
   // Scroll chat to bottom on update — but only if the user hasn't scrolled up to read earlier.
   useEffect(() => {
     if (chatPinnedRef.current) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamBuffer]);
+  }, [messagesState, streamBuffer]);
 
   // Re-pin to the bottom whenever a new message round starts streaming.
   useEffect(() => {
@@ -240,7 +239,17 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   }
 
   async function streamMessage(questionId: string, content: string) {
-    setMessages((prev) => [...prev, { id: crypto.randomUUID(), questionId, role: "user", content, createdAt: new Date().toISOString() }]);
+    const userMsg: Message = {
+      id: crypto.randomUUID(),
+      questionId,
+      role: "user",
+      content,
+      createdAt: new Date().toISOString(),
+    };
+    setMessagesState((prev) => ({
+      questionId,
+      messages: [...(prev.questionId === questionId ? prev.messages : []), userMsg],
+    }));
     setStreaming(true);
     setStreamBuffer("");
 
@@ -260,7 +269,17 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
       setStreamBuffer(full);
     }
 
-    setMessages((prev) => [...prev, { id: crypto.randomUUID(), questionId, role: "assistant", content: full, createdAt: new Date().toISOString() }]);
+    const assistantMsg: Message = {
+      id: crypto.randomUUID(),
+      questionId,
+      role: "assistant",
+      content: full,
+      createdAt: new Date().toISOString(),
+    };
+    setMessagesState((prev) => ({
+      questionId,
+      messages: [...(prev.questionId === questionId ? prev.messages : []), assistantMsg],
+    }));
     setStreamBuffer("");
     setStreaming(false);
   }
@@ -275,8 +294,6 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
       });
   }, [chunks, chunkQuestions, searchQuery, threadsOnly]);
 
-  useEffect(() => { setSearchMatchCursor(0); }, [searchQuery, threadsOnly]);
-
   useEffect(() => {
     if (view !== "transcript" || tab !== "transcript") return;
     if (activeChunkIdx >= 0 && !userScrolling && chunkRefs.current[activeChunkIdx]) {
@@ -285,10 +302,10 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   }, [activeChunkIdx, userScrolling, view, tab]);
 
   useEffect(() => {
-    if (view === "chat" && activeQuestionId === null) {
+    if (threadView === "chat" && threadQuestionId === null) {
       setTimeout(() => inputRef.current?.focus(), 320);
     }
-  }, [view, activeQuestionId]);
+  }, [threadView, threadQuestionId]);
 
   const handleScroll = useCallback(() => {
     setUserScrolling(true);
@@ -335,7 +352,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
 
   function handleAsk(ci: number) {
     setActiveQuestionChunkIdx(ci);
-    setMessages([]);
+    setMessagesState({ questionId: null, messages: [] });
     setStreamBuffer("");
     setFollowupInput("");
     if (chunkQuestions[ci]) {
@@ -372,16 +389,16 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   }
 
   async function sendFollowup() {
-    if (!followupInput.trim() || !activeQuestionId || streaming) return;
+    if (!followupInput.trim() || !threadQuestionId || streaming) return;
     const content = followupInput;
     setFollowupInput("");
-    await streamMessage(activeQuestionId, content);
+    await streamMessage(threadQuestionId, content);
   }
 
   async function summarize() {
-    if (!activeQuestionId) return;
+    if (!threadQuestionId) return;
     setSummarizing(true);
-    await fetch(`/api/questions/${activeQuestionId}/summarize`, { method: "POST" });
+    await fetch(`/api/questions/${threadQuestionId}/summarize`, { method: "POST" });
     setSummarizing(false);
     onGraphRefresh();
   }
@@ -390,12 +407,12 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
     setView("transcript");
     setActiveQuestionId(null);
     setActiveQuestionChunkIdx(null);
-    setMessages([]);
+    setMessagesState({ questionId: null, messages: [] });
     setStreamBuffer("");
     onCloseThread?.(); // clear the selected graph node, if the thread was opened from there
   }
 
-  const chatChunk = activeQuestionChunkIdx !== null ? chunks[activeQuestionChunkIdx] : null;
+  const chatChunk = threadChunkIdx !== null ? chunks[threadChunkIdx] : null;
   const isFiltering = searchQuery.trim() !== "" || threadsOnly;
   const showCounter = searchQuery.trim() !== "" && filteredItems.length > 0;
 
@@ -412,7 +429,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
         {/* ── Transcript / Summary / Notes panel ── */}
         <div
           className="absolute inset-0 flex flex-col transition-transform duration-300 ease-in-out"
-          style={{ transform: view === "chat" ? "translateX(-100%)" : "translateX(0)" }}
+          style={{ transform: threadView === "chat" ? "translateX(-100%)" : "translateX(0)" }}
         >
           {/* Tabs */}
           <div className="shrink-0 px-5 flex items-center gap-3 border-b py-2.5" style={{ borderColor: "var(--border)" }}>
@@ -459,7 +476,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
                 </svg>
                 <input
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => { setSearchQuery(e.target.value); setSearchMatchCursor(0); }}
                   placeholder="Search transcript…"
                   className="w-full pl-6 pr-6 py-1 text-xs rounded-md border outline-none"
                   style={{
@@ -470,7 +487,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
                 />
                 {searchQuery && (
                   <button
-                    onClick={() => setSearchQuery("")}
+                    onClick={() => { setSearchQuery(""); setSearchMatchCursor(0); }}
                     className="absolute right-1.5 top-1/2 -translate-y-1/2 type-mono"
                     style={{ fontSize: "0.7rem", color: "var(--muted)" }}
                   >
@@ -494,7 +511,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
                 </>
               )}
               <button
-                onClick={() => setThreadsOnly((v) => !v)}
+                onClick={() => { setThreadsOnly((v) => !v); setSearchMatchCursor(0); }}
                 className="type-mono shrink-0 px-2 py-1 rounded-md transition-colors"
                 style={{
                   fontSize: "0.6rem",
@@ -516,6 +533,12 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
           >
             <SummaryView sourceId={sourceId} initialSummary={initialSummary} />
           </div>
+
+          {tab === "notes" && !notesLoaded && (
+            <div className="flex-1 flex items-center justify-center">
+              <p className="text-xs" style={{ color: "var(--muted)" }}>Loading…</p>
+            </div>
+          )}
 
           {tab === "notes" && notesLoaded && (
             <NotesView
@@ -648,7 +671,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
         {/* ── Chat panel ── */}
         <div
           className="absolute inset-0 flex flex-col transition-transform duration-300 ease-in-out"
-          style={{ transform: view === "chat" ? "translateX(0)" : "translateX(100%)" }}
+          style={{ transform: threadView === "chat" ? "translateX(0)" : "translateX(100%)" }}
         >
           {/* Header */}
           <div className="shrink-0 px-5 py-2.5 border-b flex items-center justify-between gap-3" style={{ borderColor: "var(--border)" }}>
@@ -665,7 +688,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
                   {formatTime(chatChunk.offset)}
                 </span>
               )}
-              {activeQuestionId && messages.length > 0 && (
+              {threadQuestionId && messages.length > 0 && (
                 <button
                   onClick={summarize}
                   disabled={summarizing}
@@ -694,7 +717,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
           )}
 
           {/* Pre-question input (no thread yet) */}
-          {activeQuestionId === null && (
+          {threadQuestionId === null && (
             <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
               <div className="flex-1" />
               <div className="px-5 py-3 border-t shrink-0" style={{ borderColor: "var(--border)" }}>
@@ -728,7 +751,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
           )}
 
           {/* Conversation (thread loaded or just created) */}
-          {activeQuestionId !== null && (
+          {threadQuestionId !== null && (
             <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
               <div ref={chatScrollRef} onScroll={handleChatScroll} className="flex-1 overflow-y-auto min-h-0 px-5 py-3 flex flex-col gap-4">
                 {messages.map((m) => (

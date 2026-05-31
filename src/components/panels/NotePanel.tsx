@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import NotesView, { type NotesViewHandle } from "@/components/source/NotesView";
+import { useSourceNotes } from "@/hooks/useSourceNotes";
 
 interface Props {
   sourceId: string;
@@ -10,20 +11,11 @@ interface Props {
 }
 
 export default function NotePanel({ sourceId, onOpenThread, onOpenSource }: Props) {
-  const [notes, setNotes] = useState("");
-  const [loaded, setLoaded] = useState(false);
+  const { notes, loaded, setNotes } = useSourceNotes(sourceId);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editorRef = useRef<NotesViewHandle | null>(null);
-
-  useEffect(() => {
-    setLoaded(false);
-    fetch(`/api/sources/${sourceId}/notes`)
-      .then((r) => r.json())
-      .then((data) => { setNotes(data.notes ?? ""); setLoaded(true); })
-      .catch(() => setLoaded(true));
-  }, [sourceId]);
 
   function handleChange(value: string) {
     setNotes(value);

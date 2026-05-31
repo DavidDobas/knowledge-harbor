@@ -4,54 +4,68 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import Sidebar from "@/components/layout/Sidebar";
 import CenterPane from "@/components/layout/CenterPane";
 import RightPanel from "@/components/layout/RightPanel";
+import TabBar from "@/components/layout/TabBar";
 import type { SelectedNode, Source, Space, Question, KnowledgeCard } from "@/lib/types";
-
-const NAV_STATE_KEY = "kh.navState";
+import {
+  TABS_STORAGE_KEY,
+  createWorkspaceTab,
+  tabToPersisted,
+  getInitialWorkspace,
+  type WorkspaceTab,
+} from "@/lib/workspaceTabs";
 
 export default function Home() {
-  const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
+  const [tabs, setTabs] = useState<WorkspaceTab[]>(() => getInitialWorkspace().tabs);
+  const [activeTabId, setActiveTabId] = useState<string>(() => getInitialWorkspace().activeTabId);
+  const activeTabIdRef = useRef(activeTabId);
+
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId;
+  }, [activeTabId]);
+
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [allSources, setAllSources] = useState<Source[]>([]);
-  const [activeSource, setActiveSource] = useState<(Source & { pdfUrl?: string }) | null>(null);
-  const [sourceQuestions, setSourceQuestions] = useState<Question[]>([]);
-  const [sourceCards, setSourceCards] = useState<KnowledgeCard[]>([]);
-  const [drillInTransition, setDrillInTransition] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [hydrating, setHydrating] = useState(
+    () => getInitialWorkspace().tabs.some((t) => t.activeSourceId != null),
+  );
+
   const graphDataCache = useRef(new Map<string, {
     questions: Question[];
     cards: KnowledgeCard[];
     source?: Source;
   }>());
   const graphDataLoadedForRef = useRef<string | null>(null);
-  const [selectedNode, setSelectedNode] = useState<SelectedNode | null>(null);
-  const [activeChunkIdx, setActiveChunkIdx] = useState(-1);
-  const [refreshKey, setRefreshKey] = useState(0);
-  const [pdfSelection, setPdfSelection] = useState<{ text: string; page: number; rects: { x:number; y:number; w:number; h:number }[] } | null>(null);
-  const [viewMode, setViewMode] = useState<"graph" | "viewer">("graph");
-  // First message to auto-send when a freshly-created PDF question thread opens.
-  // Passage + page are carried through so the thread panel can render the highlighted
-  // context immediately on mount — without it, there's a visible flicker between
-  // PDFSelectionPanel and QuestionPanel while the question row is fetched.
-  const [pendingInitialMessage, setPendingInitialMessage] = useState<{
-    questionId: string;
-    message: string;
-    passage?: string;
-    page?: number;
-  } | null>(null);
-  // While true (until restore completes), we don't persist nav state — avoids clobbering
-  // the saved state with initial defaults before it's read back.
-  const [restoring, setRestoring] = useState(true);
 
   const seekRef = useRef<((ms: number) => void) | null>(null);
   const handleRegisterSeek = useCallback((fn: (ms: number) => void) => { seekRef.current = fn; }, []);
   const handleSeekTo = useCallback((ms: number) => { seekRef.current?.(ms); }, []);
 
-  const fetchFullSourceDetails = useCallback((sourceId: string) => {
+  const activeTab = useMemo(
+    () => tabs.find((t) => t.id === activeTabId) ?? tabs[0],
+    [tabs, activeTabId],
+  );
+
+  const patchActiveTab = useCallback((patch: Partial<WorkspaceTab>) => {
+    const id = activeTabIdRef.current;
+    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }, []);
+
+  const patchTab = useCallback((tabId: string, patch: Partial<WorkspaceTab>) => {
+    setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, ...patch } : t)));
+  }, []);
+
+  const fetchFullSourceDetails = useCallback((sourceId: string, tabId?: string) => {
     fetch(`/api/sources/${sourceId}`)
       .then((r) => r.json())
       .then((full) => {
-        if (full?.id) {
-          setActiveSource((prev) => (prev?.id === full.id ? { ...prev, ...full } : full));
-        }
+        if (!full?.id) return;
+        const id = tabId ?? activeTabIdRef.current;
+        setTabs((prev) => prev.map((t) => {
+          if (t.id !== id) return t;
+          if (t.activeSourceId !== full.id) return t;
+          return { ...t, activeSource: { ...(t.activeSource ?? full), ...full } };
+        }));
       })
       .catch(() => {});
   }, []);
@@ -82,40 +96,46 @@ export default function Home() {
     loadSourceGraphData(source.id);
   }, [loadSourceGraphData]);
 
-  // Single slim round-trip: graph nodes + fresh graphLayout (no transcript/notes/summary).
   const ensureSourceGraphReady = useCallback(
     (sourceId: string) => loadSourceGraphData(sourceId),
     [loadSourceGraphData],
   );
 
   const handleDrillInComplete = useCallback(() => {
-    setDrillInTransition(false);
-  }, []);
+    patchActiveTab({ drillInTransition: false });
+  }, [patchActiveTab]);
 
-  // Load questions/cards when the active source changes — skip if already loaded
-  // (e.g. drill-in prefetched graph data before activeSource was set).
+  // Load graph data when the active tab's source changes.
   useEffect(() => {
-    if (!activeSource) {
-      setSourceQuestions([]);
-      setSourceCards([]);
+    const tab = tabs.find((t) => t.id === activeTabId);
+    const sourceId = tab?.activeSource?.id;
+    if (!sourceId || !tab) {
       graphDataLoadedForRef.current = null;
       return;
     }
-    if (graphDataLoadedForRef.current === activeSource.id) return;
+    if (graphDataLoadedForRef.current === sourceId) return;
+    if (tab.sourceQuestions.length > 0 && tab.activeSourceId === sourceId) {
+      graphDataLoadedForRef.current = sourceId;
+      return;
+    }
 
-    loadSourceGraphData(activeSource.id).then((data) => {
-      graphDataLoadedForRef.current = activeSource.id;
-      setSourceQuestions(data.questions);
-      setSourceCards(data.cards);
-      if (data.source) {
-        setActiveSource((prev) =>
-          prev?.id === data.source!.id ? { ...prev, ...data.source } : prev,
-        );
-      }
+    const tabId = tab.id;
+    loadSourceGraphData(sourceId).then((data) => {
+      graphDataLoadedForRef.current = sourceId;
+      setTabs((prev) => prev.map((t) => {
+        if (t.id !== tabId || t.activeSourceId !== sourceId) return t;
+        return {
+          ...t,
+          sourceQuestions: data.questions,
+          sourceCards: data.cards,
+          ...(data.source && t.activeSource
+            ? { activeSource: { ...t.activeSource, ...data.source } }
+            : {}),
+        };
+      }));
     });
-  }, [activeSource?.id, refreshKey, loadSourceGraphData]);
+  }, [activeTabId, tabs, activeTab?.activeSourceId, activeTab?.id, activeTab?.sourceQuestions.length, refreshKey, loadSourceGraphData]);
 
-  // Load spaces + all sources once; filter client-side when switching spaces.
   useEffect(() => {
     Promise.all([
       fetch("/api/spaces").then((r) => r.json()),
@@ -127,63 +147,61 @@ export default function Home() {
   }, [refreshKey]);
 
   const visibleSources = useMemo(
-    () => (selectedSpaceId ? allSources.filter((s) => s.spaceId === selectedSpaceId) : allSources),
-    [allSources, selectedSpaceId],
+    () => (activeTab?.selectedSpaceId
+      ? allSources.filter((s) => s.spaceId === activeTab.selectedSpaceId)
+      : allSources),
+    [allSources, activeTab],
   );
 
-  // Merge a partial update into activeSource without triggering a server re-fetch (which
-  // would generate a new pdfUrl and cause react-pdf to reload the binary). Used for
-  // things like adding/deleting PDF highlights — they don't affect the graph or the PDF.
   const updateActiveSource = useCallback((updates: Partial<Source>) => {
-    setActiveSource((prev) => (prev ? { ...prev, ...updates } : prev));
+    const id = activeTabIdRef.current;
+    setTabs((prev) => prev.map((t) => {
+      if (t.id !== id || !t.activeSource) return t;
+      return { ...t, activeSource: { ...t.activeSource, ...updates } };
+    }));
   }, []);
 
-  // Restore navigation state from before the last refresh.
+  // Hydrate activeSource for restored tabs (async — setState only in fetch callbacks).
   useEffect(() => {
-    let saved: string | null = null;
-    try { saved = window.localStorage.getItem(NAV_STATE_KEY); } catch { /* ignore */ }
-    if (!saved) { setRestoring(false); return; }
-    try {
-      const s = JSON.parse(saved) as {
-        selectedSpaceId?: string | null;
-        activeSourceId?: string | null;
-        viewMode?: "graph" | "viewer";
-        selectedNode?: SelectedNode | null;
-      };
-      if (s.selectedSpaceId !== undefined) setSelectedSpaceId(s.selectedSpaceId);
-      if (s.viewMode) setViewMode(s.viewMode);
-      if (s.selectedNode) setSelectedNode(s.selectedNode);
-      if (s.activeSourceId) {
-        fetch(`/api/sources/${s.activeSourceId}`)
+    const pending = getInitialWorkspace().tabs.filter((t) => t.activeSourceId);
+    if (!pending.length) return;
+
+    Promise.all(
+      pending.map((t) =>
+        fetch(`/api/sources/${t.activeSourceId}`)
           .then((r) => (r.ok ? r.json() : null))
-          .then((src) => { if (src?.id) setActiveSource(src); })
-          .catch(() => {})
-          .finally(() => setRestoring(false));
-      } else {
-        setRestoring(false);
-      }
-    } catch {
-      setRestoring(false);
-    }
+          .then((src) => {
+            if (!src?.id) return;
+            setTabs((prev) => prev.map((tab) => {
+              if (tab.id !== t.id) return tab;
+              return {
+                ...tab,
+                activeSource: src,
+                label: src.title ?? tab.label,
+                sourceType: src.type ?? tab.sourceType,
+              };
+            }));
+          }),
+      ),
+    ).finally(() => setHydrating(false));
   }, []);
 
-  // Persist navigation state on change (after restore has completed).
   useEffect(() => {
-    if (restoring) return;
+    if (hydrating) return;
     try {
-      window.localStorage.setItem(NAV_STATE_KEY, JSON.stringify({
-        selectedSpaceId,
-        activeSourceId: activeSource?.id ?? null,
-        viewMode,
-        selectedNode,
+      window.localStorage.setItem(TABS_STORAGE_KEY, JSON.stringify({
+        tabs: tabs.map(tabToPersisted),
+        activeTabId,
       }));
     } catch { /* ignore */ }
-  }, [restoring, selectedSpaceId, activeSource?.id, viewMode, selectedNode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hydrating, tabs, activeTabId]);
 
-  function handleSelectNode(node: SelectedNode | null) {
-    setSelectedNode(node);
-    if (node?.type === "question") setPdfSelection(null);
-  }
+  const handleSelectNode = useCallback((node: SelectedNode | null) => {
+    patchActiveTab({
+      selectedNode: node,
+      ...(node?.type === "question" ? { pdfSelection: null } : {}),
+    });
+  }, [patchActiveTab]);
 
   const handleSelectSourceFromGraph = useCallback((
     source: Source,
@@ -192,131 +210,201 @@ export default function Home() {
       graphData?: { questions: Question[]; cards: KnowledgeCard[]; source?: Source };
     },
   ) => {
-    setSelectedSpaceId(source.spaceId);
-    setDrillInTransition(opts?.drillIn ?? false);
-    setSelectedNode(null);
-    setActiveChunkIdx(-1);
-    setPdfSelection(null);
-    setViewMode("graph");
+    const tabId = activeTabIdRef.current;
     const graphData = opts?.graphData ?? graphDataCache.current.get(source.id);
-    if (graphData) {
-      graphDataLoadedForRef.current = source.id;
-      setSourceQuestions(graphData.questions);
-      setSourceCards(graphData.cards);
-    }
+    if (graphData) graphDataLoadedForRef.current = source.id;
     const graphSource = opts?.graphData?.source;
-    setActiveSource(graphSource ? { ...source, ...graphSource } : source);
-    // Heavy fields (transcript, notes, pdfUrl) load in the background — graph doesn't wait.
-    fetchFullSourceDetails(source.id);
-  }, [fetchFullSourceDetails]);
+    const merged = graphSource ? { ...source, ...graphSource } : source;
 
-  function handleSelectSpace(spaceId: string | null) {
-    setSelectedSpaceId(spaceId);
-    setActiveSource(null);
-    setDrillInTransition(false);
-    setSelectedNode(null);
-    setActiveChunkIdx(-1);
-    setPdfSelection(null);
-    setViewMode("graph");
-  }
+    patchTab(tabId, {
+      label: source.title,
+      sourceType: source.type,
+      selectedSpaceId: source.spaceId,
+      activeSourceId: source.id,
+      activeSource: merged,
+      drillInTransition: opts?.drillIn ?? false,
+      selectedNode: null,
+      activeChunkIdx: -1,
+      pdfSelection: null,
+      viewMode: "graph",
+      sourceQuestions: graphData?.questions ?? [],
+      sourceCards: graphData?.cards ?? [],
+    });
+    fetchFullSourceDetails(source.id, tabId);
+  }, [patchTab, fetchFullSourceDetails]);
 
-  // Navigate to a source referenced from notes.
-  async function handleOpenSource(sourceId: string) {
+  const handleSelectSpace = useCallback((spaceId: string | null) => {
+    patchActiveTab({
+      selectedSpaceId: spaceId,
+      activeSource: null,
+      activeSourceId: null,
+      sourceType: null,
+      label: spaceId ? (spaces.find((s) => s.id === spaceId)?.name ?? "Space") : "New tab",
+      drillInTransition: false,
+      selectedNode: null,
+      activeChunkIdx: -1,
+      pdfSelection: null,
+      viewMode: "graph",
+      sourceQuestions: [],
+      sourceCards: [],
+    });
+    graphDataLoadedForRef.current = null;
+  }, [patchActiveTab, spaces]);
+
+  const handleOpenSource = useCallback(async (sourceId: string) => {
     try {
       const src = await fetch(`/api/sources/${sourceId}`).then((r) => r.json());
       if (src?.id) handleSelectSourceFromGraph(src);
     } catch { /* ignore */ }
-  }
+  }, [handleSelectSourceFromGraph]);
 
-  // Open a chat thread referenced from notes. The thread may belong to a different source,
-  // so we resolve its source, navigate there, and select the question node.
-  async function handleOpenThread(questionId: string) {
+  const handleOpenThread = useCallback(async (questionId: string) => {
     try {
       const q = await fetch(`/api/questions/${questionId}`).then((r) => r.json());
       if (!q?.sourceId) return;
-      if (q.sourceId !== activeSource?.id) {
+      const tabId = activeTabIdRef.current;
+      const tab = tabs.find((t) => t.id === tabId);
+      if (q.sourceId !== tab?.activeSourceId) {
         const src = await fetch(`/api/sources/${q.sourceId}`).then((r) => r.json());
-        setActiveSource(src);
-        setSelectedSpaceId(src.spaceId ?? null);
+        patchTab(tabId, {
+          activeSource: src,
+          activeSourceId: src.id,
+          label: src.title,
+          sourceType: src.type,
+          selectedSpaceId: src.spaceId ?? null,
+        });
+        fetchFullSourceDetails(src.id, tabId);
       }
-      setPdfSelection(null);
-      // Keep the current viewMode — if the user is watching the video, opening a
-      // referenced thread shouldn't kick them out of the viewer.
-      setSelectedNode({ type: "question", id: questionId });
-    } catch {
-      /* ignore */
-    }
-  }
+      patchTab(tabId, {
+        pdfSelection: null,
+        selectedNode: { type: "question", id: questionId },
+      });
+    } catch { /* ignore */ }
+  }, [tabs, patchTab, fetchFullSourceDetails]);
+
+  const handleNewTab = useCallback(() => {
+    const tab = createWorkspaceTab();
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+    graphDataLoadedForRef.current = null;
+  }, []);
+
+  const handleSelectTab = useCallback((id: string) => {
+    setActiveTabId(id);
+    graphDataLoadedForRef.current = null;
+  }, []);
+
+  const handleCloseTab = useCallback((id: string) => {
+    setTabs((prev) => {
+      if (prev.length <= 1) {
+        const fresh = createWorkspaceTab();
+        setActiveTabId(fresh.id);
+        graphDataLoadedForRef.current = null;
+        return [fresh];
+      }
+      const idx = prev.findIndex((t) => t.id === id);
+      const next = prev.filter((t) => t.id !== id);
+      if (id === activeTabIdRef.current) {
+        const neighbor = next[Math.min(idx, next.length - 1)];
+        setActiveTabId(neighbor.id);
+        graphDataLoadedForRef.current = null;
+      }
+      return next;
+    });
+  }, []);
+
+  const tabBarItems = useMemo(
+    () => tabs.map((t) => ({ id: t.id, label: t.label, sourceType: t.sourceType })),
+    [tabs],
+  );
 
   return (
     <div className="h-full flex flex-col overflow-hidden" style={{ background: "var(--background)" }}>
-      <header className="h-11 shrink-0 flex items-center px-4 gap-3 border-b" style={{ background: "var(--sidebar-bg)", borderColor: "var(--border)" }}>
-        <div className="flex items-center gap-2">
-          <span className="type-serif font-semibold text-sm" style={{ color: "var(--foreground)", letterSpacing: "-0.01em" }}>KnowledgeHarbor</span>
-          {activeSource && (
-            <>
-              <span className="type-mono" style={{ fontSize: "0.65rem", color: "var(--border)" }}>›</span>
-              <span className="type-mono" style={{ fontSize: "0.7rem", color: "var(--text-secondary)", letterSpacing: "0.01em" }}>{activeSource.title}</span>
-            </>
-          )}
-        </div>
-      </header>
+      <TabBar
+        tabs={tabBarItems}
+        activeTabId={activeTabId}
+        onSelectTab={handleSelectTab}
+        onCloseTab={handleCloseTab}
+        onNewTab={handleNewTab}
+      />
 
       <div className="flex-1 flex overflow-hidden">
         <Sidebar
           spaces={spaces}
           sources={visibleSources}
-          selectedSpaceId={selectedSpaceId}
+          selectedSpaceId={activeTab?.selectedSpaceId ?? null}
+          activeSourceId={activeTab?.activeSourceId ?? null}
           onSelectSpace={handleSelectSpace}
           onSelectSource={handleSelectSourceFromGraph}
           onSourceAdded={refresh}
           onSpaceAdded={refresh}
         />
-        <CenterPane
-          activeSource={activeSource}
-          spaces={spaces}
-          allSources={allSources}
-          questions={sourceQuestions}
-          cards={sourceCards}
-          drillInTransition={drillInTransition}
-          onDrillInComplete={handleDrillInComplete}
-          onPrefetchSource={prefetchSourceGraph}
-          onEnsureSourceGraphReady={ensureSourceGraphReady}
-          selectedSpaceId={selectedSpaceId}
-          selectedNode={selectedNode}
-          viewMode={viewMode}
-          onSetViewMode={setViewMode}
-          onSelectNode={handleSelectNode}
-          onSelectSpace={(id) => handleSelectSpace(id)}
-          onSelectSource={handleSelectSourceFromGraph}
-          onGraphRefresh={refresh}
-          onActiveChunkIdxChange={setActiveChunkIdx}
-          onRegisterSeek={handleRegisterSeek}
-          onPdfTextSelect={(text, page, rects) => { setPdfSelection({ text, page, rects }); setSelectedNode(null); }}
-          onClearPdfSelection={() => setPdfSelection(null)}
-          onActiveSourceUpdate={updateActiveSource}
-          pdfSelection={pdfSelection}
-        />
-        <RightPanel
-          activeSource={activeSource}
-          selectedNode={selectedNode}
-          activeChunkIdx={activeChunkIdx}
-          viewMode={viewMode}
-          onSeekTo={handleSeekTo}
-          onSelectNode={handleSelectNode}
-          onGraphRefresh={refresh}
-          onActiveSourceUpdate={updateActiveSource}
-          pdfSelection={pdfSelection}
-          onClearPdfSelection={() => setPdfSelection(null)}
-          onOpenThread={handleOpenThread}
-          onOpenSource={handleOpenSource}
-          pendingInitialMessage={pendingInitialMessage}
-          onPdfQuestionCreated={(questionId, message, passage, page) => {
-            setPdfSelection(null);
-            setPendingInitialMessage({ questionId, message, passage, page });
-            setSelectedNode({ type: "question", id: questionId });
-          }}
-        />
+
+        <div className="flex-1 flex min-w-0 overflow-hidden relative">
+          {tabs.map((tab) => {
+            const visible = tab.id === activeTabId;
+            return (
+              <div
+                key={tab.id}
+                className="absolute inset-0 flex min-w-0 overflow-hidden"
+                style={{ display: visible ? "flex" : "none" }}
+                aria-hidden={!visible}
+              >
+                <CenterPane
+                  activeSource={tab.activeSource}
+                  spaces={spaces}
+                  allSources={allSources}
+                  questions={tab.sourceQuestions}
+                  cards={tab.sourceCards}
+                  drillInTransition={tab.drillInTransition}
+                  onDrillInComplete={handleDrillInComplete}
+                  onPrefetchSource={prefetchSourceGraph}
+                  onEnsureSourceGraphReady={ensureSourceGraphReady}
+                  selectedSpaceId={tab.selectedSpaceId}
+                  selectedNode={tab.selectedNode}
+                  viewMode={tab.viewMode}
+                  onSetViewMode={(mode) => patchTab(tab.id, { viewMode: mode })}
+                  onSelectNode={visible ? handleSelectNode : () => {}}
+                  onSelectSpace={handleSelectSpace}
+                  onSelectSource={handleSelectSourceFromGraph}
+                  onGraphRefresh={refresh}
+                  onActiveChunkIdxChange={(idx) => patchTab(tab.id, { activeChunkIdx: idx })}
+                  onRegisterSeek={visible ? handleRegisterSeek : () => {}}
+                  onPdfTextSelect={(text, page, rects) => {
+                    if (!visible) return;
+                    patchTab(tab.id, { pdfSelection: { text, page, rects }, selectedNode: null });
+                  }}
+                  onClearPdfSelection={() => patchTab(tab.id, { pdfSelection: null })}
+                  onActiveSourceUpdate={visible ? updateActiveSource : () => {}}
+                  pdfSelection={tab.pdfSelection}
+                />
+                <RightPanel
+                  activeSource={tab.activeSource}
+                  selectedNode={tab.selectedNode}
+                  activeChunkIdx={tab.activeChunkIdx}
+                  viewMode={tab.viewMode}
+                  onSeekTo={handleSeekTo}
+                  onSelectNode={visible ? handleSelectNode : () => {}}
+                  onGraphRefresh={refresh}
+                  onActiveSourceUpdate={visible ? updateActiveSource : () => {}}
+                  pdfSelection={tab.pdfSelection}
+                  onClearPdfSelection={() => patchTab(tab.id, { pdfSelection: null })}
+                  onOpenThread={handleOpenThread}
+                  onOpenSource={handleOpenSource}
+                  pendingInitialMessage={tab.pendingInitialMessage}
+                  onPdfQuestionCreated={(questionId, message, passage, page) => {
+                    if (!visible) return;
+                    patchTab(tab.id, {
+                      pdfSelection: null,
+                      pendingInitialMessage: { questionId, message, passage, page },
+                      selectedNode: { type: "question", id: questionId },
+                    });
+                  }}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

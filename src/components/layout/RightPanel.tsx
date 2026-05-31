@@ -45,17 +45,20 @@ export default function RightPanel({
   const isNote = activeSource?.type === "note";
 
   // Width state — restored from localStorage on mount, persisted on drag release.
-  const [width, setWidth] = useState<number>(RIGHT_PANEL_DEFAULT_WIDTH);
+  const [width, setWidth] = useState<number>(() => {
+    if (typeof window === "undefined") return RIGHT_PANEL_DEFAULT_WIDTH;
+    try {
+      const saved = window.localStorage.getItem(RIGHT_PANEL_WIDTH_KEY);
+      if (!saved) return RIGHT_PANEL_DEFAULT_WIDTH;
+      const n = parseInt(saved, 10);
+      if (isNaN(n)) return RIGHT_PANEL_DEFAULT_WIDTH;
+      return Math.max(RIGHT_PANEL_MIN_WIDTH, Math.min(RIGHT_PANEL_MAX_WIDTH, n));
+    } catch {
+      return RIGHT_PANEL_DEFAULT_WIDTH;
+    }
+  });
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
-
-  useEffect(() => {
-    const saved = window.localStorage.getItem(RIGHT_PANEL_WIDTH_KEY);
-    if (saved) {
-      const n = parseInt(saved, 10);
-      if (!isNaN(n)) setWidth(Math.max(RIGHT_PANEL_MIN_WIDTH, Math.min(RIGHT_PANEL_MAX_WIDTH, n)));
-    }
-  }, []);
 
   const onDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();

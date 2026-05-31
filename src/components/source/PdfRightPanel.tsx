@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import NotesView from "@/components/source/NotesView";
 import SummaryView from "@/components/source/SummaryView";
+import { useSourceNotes } from "@/hooks/useSourceNotes";
 
 type Tab = "notes" | "summary";
 
@@ -15,21 +16,10 @@ interface Props {
 
 export default function PdfRightPanel({ sourceId, initialSummary, onOpenThread, onOpenSource }: Props) {
   const [tab, setTab] = useState<Tab>("notes");
-
-  // Notes state
-  const [notes, setNotes] = useState("");
-  const [loaded, setLoaded] = useState(false);
+  const { notes, loaded, setNotes } = useSourceNotes(sourceId);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    setLoaded(false);
-    fetch(`/api/sources/${sourceId}/notes`)
-      .then((r) => r.json())
-      .then((data) => { setNotes(data.notes ?? ""); setLoaded(true); })
-      .catch(() => setLoaded(true));
-  }, [sourceId]);
 
   function handleChange(value: string) {
     setNotes(value);
@@ -82,6 +72,12 @@ export default function PdfRightPanel({ sourceId, initialSummary, onOpenThread, 
           </button>
         ))}
       </div>
+
+      {tab === "notes" && !loaded && (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-xs" style={{ color: "var(--muted)" }}>Loading…</p>
+        </div>
+      )}
 
       {tab === "notes" && loaded && (
         <NotesView

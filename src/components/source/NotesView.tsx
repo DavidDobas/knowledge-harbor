@@ -316,7 +316,7 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
     };
     dom.addEventListener("click", handler);
     return () => dom.removeEventListener("click", handler);
-  }, [editor, onSeekTo, onSwitchToTranscript, onOpenThread]);
+  }, [editor, onSeekTo, onSwitchToTranscript, onOpenThread, onOpenSource]);
 
   // Keyboard navigation for the @-mention dropdown. Capture-phase so it runs before
   // ProseMirror's own key handling.

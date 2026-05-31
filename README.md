@@ -20,6 +20,7 @@ All source types share the same **graph**, **spaces**, and cross-linking tools b
 - **Chat threads** — backed by OpenAI's Responses API (`gpt-5.5`). PDFs are uploaded as `input_file` for full-document context; YouTube threads use the transcript. Optional per-thread `web_search` for following up on cited references. Thread titles are AI-generated and **editable inline** in the thread view.
 - **Knowledge cards** — distill any thread into a saved card on the graph.
 - **Graph view** — spaces → sources → threads/cards, rendered with React Flow. Drag nodes to rearrange; draw **areas** to group questions. Layouts persist per source. Smooth drill-in from a space to a single source.
+- **Workspace tabs** — open multiple sources in independent tabs from the top bar. Each tab keeps its own graph position, selected thread, viewer mode, and panel state. Tabs persist across refreshes.
 
 Single-user app — there's no auth. Designed to run locally or on a private deployment.
 
@@ -123,4 +124,5 @@ src/
 - **Notes (tab)** — available on YouTube/PDF sources. Type `@` to link to a thread or another source. Copy from chat preserves markdown, tables, and equations.
 - **Summaries** — generated once per source and stored in the DB. Use **Regenerate** to force a new one.
 - **Graph** — home screen (`/`). Three levels: all spaces → sources in a space → threads & cards for one source. Click a source card to drill in; drag nodes or add **Area** frames to organize. Positions save automatically.
-- **Navigation** — selected space, active source, and view mode persist in `localStorage` across refreshes.
+- **Tabs** — use **+ New tab** in the header to work on several sources in parallel. Tab title and icon update when you open a source; close with **×** or middle-click. State is saved in `localStorage`.
+- **Navigation** — per-tab space/source selection and open tabs persist in `localStorage` across refreshes.

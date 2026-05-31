@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { Space, Source } from "@/lib/types";
 import { SPACE_COLORS } from "@/lib/colors";
+import { SIDEBAR_WIDTH } from "@/lib/layout";
 import AddSourceModal from "@/components/modals/AddSourceModal";
 
 function SpaceIcon({ name, color }: { name: string; color: string }) {
@@ -37,6 +38,19 @@ function YouTubeIcon() {
   );
 }
 
+function NoteIcon() {
+  return (
+    <span
+      className="shrink-0 flex items-center justify-center rounded-md"
+      style={{ width: 28, height: 28, background: "#6B8F7122", border: "1px solid #6B8F7144" }}
+    >
+      <svg width="13" height="13" fill="none" stroke="#6B8F71" strokeWidth="2" viewBox="0 0 24 24">
+        <path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+      </svg>
+    </span>
+  );
+}
+
 function PDFIcon() {
   return (
     <span className="shrink-0 relative" style={{ width: 22, height: 26 }}>
@@ -61,10 +75,17 @@ function PDFIcon() {
   );
 }
 
+function SourceTypeIcon({ type }: { type: Source["type"] }) {
+  if (type === "youtube") return <YouTubeIcon />;
+  if (type === "note") return <NoteIcon />;
+  return <PDFIcon />;
+}
+
 interface Props {
   spaces: Space[];
   sources: Source[];
   selectedSpaceId: string | null;
+  activeSourceId?: string | null;
   onSelectSpace: (id: string | null) => void;
   onSelectSource: (source: Source) => void;
   onSourceAdded: () => void;
@@ -72,7 +93,7 @@ interface Props {
 }
 
 export default function Sidebar({
-  spaces, sources, selectedSpaceId, onSelectSpace, onSelectSource, onSourceAdded, onSpaceAdded,
+  spaces, sources, selectedSpaceId, activeSourceId, onSelectSpace, onSelectSource, onSourceAdded, onSpaceAdded,
 }: Props) {
   const [showAddSource, setShowAddSource] = useState(false);
   const [newSpaceName, setNewSpaceName] = useState("");
@@ -93,7 +114,7 @@ export default function Sidebar({
   return (
     <div
       className="shrink-0 flex flex-col h-full"
-      style={{ width: 240, background: "var(--panel-bg)", borderRight: "1px solid var(--border)" }}
+      style={{ width: SIDEBAR_WIDTH, background: "var(--panel-bg)", borderRight: "1px solid var(--border)" }}
     >
       {/* ── Spaces section ── */}
       <div className="shrink-0 px-4 pt-4 pb-3">
@@ -208,16 +229,19 @@ export default function Sidebar({
               No sources yet
             </p>
           )}
-          {sources.map((src) => (
+          {sources.map((src) => {
+            const isActive = activeSourceId === src.id;
+            return (
             <button
               key={src.id}
               onClick={() => onSelectSource(src)}
               className="w-full flex items-start gap-2.5 px-2 py-2 rounded-lg mb-0.5 text-left transition-colors group"
-              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--active-row)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              style={{ background: isActive ? "var(--active-row)" : "transparent" }}
+              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--active-row)"; }}
+              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
             >
               <span className="shrink-0 mt-0.5">
-                {src.type === "youtube" ? <YouTubeIcon /> : <PDFIcon />}
+                <SourceTypeIcon type={src.type} />
               </span>
               <span
                 className="text-xs leading-snug"
@@ -226,7 +250,8 @@ export default function Sidebar({
                 {src.title}
               </span>
             </button>
-          ))}
+            );
+          })}
         </div>
       </div>
 
