@@ -10,13 +10,15 @@ import {
   TABS_STORAGE_KEY,
   createWorkspaceTab,
   tabToPersisted,
-  getInitialWorkspace,
+  DEFAULT_WORKSPACE,
+  readPersistedWorkspace,
   type WorkspaceTab,
 } from "@/lib/workspaceTabs";
 
 export default function Home() {
-  const [tabs, setTabs] = useState<WorkspaceTab[]>(() => getInitialWorkspace().tabs);
-  const [activeTabId, setActiveTabId] = useState<string>(() => getInitialWorkspace().activeTabId);
+  const [tabs, setTabs] = useState<WorkspaceTab[]>(DEFAULT_WORKSPACE.tabs);
+  const [activeTabId, setActiveTabId] = useState(DEFAULT_WORKSPACE.activeTabId);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
   const activeTabIdRef = useRef(activeTabId);
 
   useEffect(() => {
@@ -26,9 +28,7 @@ export default function Home() {
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [allSources, setAllSources] = useState<Source[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [hydrating, setHydrating] = useState(
-    () => getInitialWorkspace().tabs.some((t) => t.activeSourceId != null),
-  );
+  const [hydrating, setHydrating] = useState(false);
 
   const graphDataCache = useRef(new Map<string, {
     questions: Question[];
@@ -161,45 +161,54 @@ export default function Home() {
     }));
   }, []);
 
-  // Hydrate activeSource for restored tabs (async — setState only in fetch callbacks).
+  // Restore tabs from localStorage after mount (keeps SSR and first client paint identical).
   useEffect(() => {
-    const pending = getInitialWorkspace().tabs.filter((t) => t.activeSourceId);
-    if (!pending.length) return;
-
-    Promise.all(
-      pending.map((t) =>
-        fetch(`/api/sources/${t.activeSourceId}`)
-          .then((r) => (r.ok ? r.json() : null))
-          .then((src) => {
-            if (!src?.id) return;
-            setTabs((prev) => prev.map((tab) => {
-              if (tab.id !== t.id) return tab;
-              return {
-                ...tab,
-                activeSource: src,
-                label: src.title ?? tab.label,
-                sourceType: src.type ?? tab.sourceType,
-              };
-            }));
-          }),
-      ),
-    ).finally(() => setHydrating(false));
+    const saved = readPersistedWorkspace();
+    queueMicrotask(() => {
+      if (saved) {
+        setTabs(saved.tabs);
+        setActiveTabId(saved.activeTabId);
+        const pending = saved.tabs.filter((t) => t.activeSourceId);
+        if (pending.length) {
+          setHydrating(true);
+          Promise.all(
+            pending.map((t) =>
+              fetch(`/api/sources/${t.activeSourceId}`)
+                .then((r) => (r.ok ? r.json() : null))
+                .then((src) => {
+                  if (!src?.id) return;
+                  setTabs((prev) => prev.map((tab) => {
+                    if (tab.id !== t.id) return tab;
+                    return {
+                      ...tab,
+                      activeSource: src,
+                      label: src.title ?? tab.label,
+                      sourceType: src.type ?? tab.sourceType,
+                    };
+                  }));
+                }),
+            ),
+          ).finally(() => setHydrating(false));
+        }
+      }
+      setWorkspaceReady(true);
+    });
   }, []);
 
   useEffect(() => {
-    if (hydrating) return;
+    if (!workspaceReady || hydrating) return;
     try {
       window.localStorage.setItem(TABS_STORAGE_KEY, JSON.stringify({
         tabs: tabs.map(tabToPersisted),
         activeTabId,
       }));
     } catch { /* ignore */ }
-  }, [hydrating, tabs, activeTabId]);
+  }, [workspaceReady, hydrating, tabs, activeTabId]);
 
   const handleSelectNode = useCallback((node: SelectedNode | null) => {
     patchActiveTab({
       selectedNode: node,
-      ...(node?.type === "question" ? { pdfSelection: null } : {}),
+      ...(node?.type === "question" || node?.type === "ask" ? { pdfSelection: null } : {}),
     });
   }, [patchActiveTab]);
 
@@ -380,6 +389,7 @@ export default function Home() {
                 />
                 <RightPanel
                   activeSource={tab.activeSource}
+                  sourceQuestions={tab.sourceQuestions}
                   selectedNode={tab.selectedNode}
                   activeChunkIdx={tab.activeChunkIdx}
                   viewMode={tab.viewMode}
@@ -394,12 +404,47 @@ export default function Home() {
                   pendingInitialMessage={tab.pendingInitialMessage}
                   onPdfQuestionCreated={(questionId, message, passage, page) => {
                     if (!visible) return;
+                    refresh();
                     patchTab(tab.id, {
                       pdfSelection: null,
                       pendingInitialMessage: { questionId, message, passage, page },
                       selectedNode: { type: "question", id: questionId },
                     });
                   }}
+                  onGeneralQuestionCreated={(questionId, message) => {
+                    if (!visible) return;
+                    const src = tab.activeSource;
+                    const optimistic: Question = {
+                      id: questionId,
+                      sourceId: src?.id ?? "",
+                      title: message,
+                      origin: "general",
+                      chunkOffset: null,
+                      pdfPage: null,
+                      pdfHighlightText: null,
+                      pdfHighlightRects: null,
+                      includeFile: src?.type === "pdf",
+                      includeWeb: false,
+                      createdAt: new Date().toISOString(),
+                    };
+                    patchTab(tab.id, {
+                      pdfSelection: null,
+                      pendingInitialMessage: { questionId, message },
+                      selectedNode: { type: "question", id: questionId },
+                      sourceQuestions: [...tab.sourceQuestions, optimistic],
+                    });
+                    if (src?.id) {
+                      loadSourceGraphData(src.id).then((data) => {
+                        patchTab(tab.id, {
+                          sourceQuestions: data.questions,
+                          sourceCards: data.cards,
+                        });
+                      });
+                    } else {
+                      refresh();
+                    }
+                  }}
+                  onClearPendingInitialMessage={() => patchTab(tab.id, { pendingInitialMessage: null })}
                 />
               </div>
             );

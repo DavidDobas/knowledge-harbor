@@ -83,19 +83,13 @@ export function persistedToTab(p: WorkspaceTabPersisted): WorkspaceTab {
   };
 }
 
-let cachedInitialWorkspace: { tabs: WorkspaceTab[]; activeTabId: string } | null = null;
+/** Stable default for SSR + first client paint — must not read localStorage. */
+const DEFAULT_TAB = createWorkspaceTab({ id: "00000000-0000-4000-8000-000000000001", label: "New tab" });
+export const DEFAULT_WORKSPACE = { tabs: [DEFAULT_TAB], activeTabId: DEFAULT_TAB.id };
 
-/** Read persisted tabs once on first client render (shared by tabs + activeTabId state inits). */
-export function getInitialWorkspace(): { tabs: WorkspaceTab[]; activeTabId: string } {
-  if (cachedInitialWorkspace) return cachedInitialWorkspace;
-
-  const fallback = () => {
-    const tab = createWorkspaceTab();
-    cachedInitialWorkspace = { tabs: [tab], activeTabId: tab.id };
-    return cachedInitialWorkspace;
-  };
-
-  if (typeof window === "undefined") return fallback();
+/** Read persisted tabs from localStorage (client-only, call from useEffect). */
+export function readPersistedWorkspace(): { tabs: WorkspaceTab[]; activeTabId: string } | null {
+  if (typeof window === "undefined") return null;
 
   try {
     let savedTabs: { tabs: WorkspaceTabPersisted[]; activeTabId: string } | null = null;
@@ -124,13 +118,12 @@ export function getInitialWorkspace(): { tabs: WorkspaceTab[]; activeTabId: stri
 
     if (savedTabs?.tabs?.length) {
       const restored = savedTabs.tabs.map(persistedToTab);
-      cachedInitialWorkspace = {
+      return {
         tabs: restored,
         activeTabId: savedTabs.activeTabId || restored[0].id,
       };
-      return cachedInitialWorkspace;
     }
   } catch { /* ignore */ }
 
-  return fallback();
+  return null;
 }

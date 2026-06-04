@@ -28,13 +28,16 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const { sourceId, title, context, chunkOffset, pdfPage, pdfHighlightText, pdfHighlightRects, includeFile, includeWeb } = await req.json();
+  const { sourceId, title, context, origin, chunkOffset, pdfPage, pdfHighlightText, pdfHighlightRects, includeFile, includeWeb } = await req.json();
   if (!sourceId || !title) return NextResponse.json({ error: "sourceId and title required" }, { status: 400 });
+
+  const resolvedOrigin = origin === "general" ? "general" : "passage";
 
   // Insert immediately with the raw question as the title so the chat can start without
   // waiting on the LLM. A representative title is generated in the background (see below).
   const [row] = await db.insert(questions).values({
     sourceId, title,
+    origin: resolvedOrigin,
     context: context ?? null,
     chunkOffset: chunkOffset ?? null,
     pdfPage: pdfPage ?? null,

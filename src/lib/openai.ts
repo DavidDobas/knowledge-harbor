@@ -51,8 +51,10 @@ export function buildResponsesInstructions(opts: {
   summary?: string | null;
   hasFileContext: boolean;
   hasWebSearch?: boolean;
+  sourceType?: string | null;
+  notes?: string | null;
 }): string {
-  const { transcript, passageContext, summary, hasFileContext, hasWebSearch } = opts;
+  const { transcript, passageContext, summary, hasFileContext, hasWebSearch, sourceType, notes } = opts;
   const webLine = hasWebSearch
     ? " The web_search tool is available — USE IT PROACTIVELY. " +
       "When the user asks about cited sources, references, or works mentioned in the paper " +
@@ -90,7 +92,16 @@ export function buildResponsesInstructions(opts: {
   if (hasFileContext) {
     return `${base} The full source PDF is attached as a file. Answer questions about it.`;
   }
-  if (!transcript) return `${base} Answer questions about the provided source material.`;
+  if (sourceType === "note" && notes?.trim()) {
+    return `${base} Answer questions about this note.\n\nNote:\n${notes.slice(0, 8000)}`;
+  }
+  if (!transcript) {
+    const material = summary ?? (notes?.trim() ? notes.slice(0, 6000) : null);
+    if (material) {
+      return `${base} Answer questions about the provided source material.\n\nSource material:\n${material}`;
+    }
+    return `${base} Answer questions about the provided source material.`;
+  }
   const material = summary ?? transcriptToText(transcript).slice(0, 6000);
   return `${base} Answer questions about the provided source material.\n\nSource material:\n${material}`;
 }

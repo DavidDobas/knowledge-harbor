@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Document, Page, pdfjs } from "react-pdf";
+import { Document, Page } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
+import { configurePdfWorker } from "@/lib/pdfWorker";
 
-pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+configurePdfWorker();
 
 // ── Highlight geometry — normalized to its page wrapper (x, y, w, h ∈ [0, 1]).
 export interface PdfRect { x: number; y: number; w: number; h: number; }

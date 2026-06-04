@@ -19,15 +19,18 @@ import "@xyflow/react/dist/style.css";
 import SourceNode from "./nodes/SourceNode";
 import QuestionNode from "./nodes/QuestionNode";
 import KnowledgeCardNode from "./nodes/KnowledgeCardNode";
+import AskNode from "./nodes/AskNode";
 import ClusterNode from "./nodes/ClusterNode";
 import AreaNode from "./nodes/AreaNode";
 import FloatingEdge from "./FloatingEdge";
 import type { Space, Source, Question, KnowledgeCard, SelectedNode } from "@/lib/types";
+import { isGeneralQuestion } from "@/lib/types";
 import { extractVideoId } from "@/lib/youtube";
 import { colorForSpaceIndex } from "@/lib/colors";
 
 const nodeTypes = {
   source: SourceNode,
+  ask: AskNode,
   question: QuestionNode,
   card: KnowledgeCardNode,
   cluster: ClusterNode,
@@ -86,6 +89,7 @@ interface Props {
 const SRC_W = 180, SRC_H = 180;
 const SRC_COMPACT_W = 180, SRC_COMPACT_H = 180;
 const Q_W = 165, Q_H = 80;
+const ASK_W = 52, ASK_H = 52;
 const CLUSTER_PADDING_X = 36;
 const CLUSTER_PADDING_TOP = 78;
 const CLUSTER_PADDING_BOTTOM = 36;
@@ -100,15 +104,23 @@ const L3_MAX_ZOOM = 0.75;
 function layoutLevel3(source: Source, questions: Question[], cards: KnowledgeCard[]): { nodes: Node[]; edges: Edge[] } {
   const questionIds = new Set(questions.map((q) => q.id));
   const validCards = cards.filter((c) => questionIds.has(c.questionId));
+  const generalQuestions = questions.filter((q) => isGeneralQuestion(q));
+  const passageQuestions = questions.filter((q) => !isGeneralQuestion(q));
+  const askId = `ask-${source.id}`;
 
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({ rankdir: "TB", ranksep: 100, nodesep: 60 });
 
   g.setNode(`source-${source.id}`, { width: SRC_W, height: SRC_H });
-  questions.forEach((q) => g.setNode(`question-${q.id}`, { width: Q_W, height: Q_H }));
+  g.setNode(askId, { width: ASK_W, height: ASK_H });
+  passageQuestions.forEach((q) => g.setNode(`question-${q.id}`, { width: Q_W, height: Q_H }));
+  generalQuestions.forEach((q) => g.setNode(`question-${q.id}`, { width: Q_W, height: Q_H }));
   validCards.forEach((c) => g.setNode(`card-${c.id}`, { width: Q_W, height: Q_H }));
-  questions.forEach((q) => g.setEdge(`source-${source.id}`, `question-${q.id}`));
+
+  g.setEdge(`source-${source.id}`, askId);
+  passageQuestions.forEach((q) => g.setEdge(`source-${source.id}`, `question-${q.id}`));
+  generalQuestions.forEach((q) => g.setEdge(askId, `question-${q.id}`));
   validCards.forEach((c) => g.setEdge(`question-${c.questionId}`, `card-${c.id}`));
   dagre.layout(g);
 
@@ -131,7 +143,15 @@ function layoutLevel3(source: Source, questions: Question[], cards: KnowledgeCar
         position: pos(`source-${source.id}`, SRC_W, SRC_H),
         // `compact: true` keeps the same card dimensions as the L1 cluster card,
         // so the transition between levels is pure camera motion (no card resize).
-        data: { showHandle: questions.length > 0, compact: true },
+        data: { showHandle: true, compact: true },
+      },
+      {
+        id: askId,
+        type: "ask",
+        position: pos(askId, ASK_W, ASK_H),
+        data: {},
+        selectable: true,
+        draggable: true,
       },
       ...questions.map((q) => ({
         id: `question-${q.id}`,
@@ -147,9 +167,23 @@ function layoutLevel3(source: Source, questions: Question[], cards: KnowledgeCar
       })),
     ],
     edges: [
-      ...questions.map((q) => ({
+      {
+        id: `e-src-ask-${source.id}`,
+        source: `source-${source.id}`,
+        target: askId,
+        type: "floating",
+        style: { stroke: "#C4B8A0", strokeWidth: 1.5 },
+      },
+      ...passageQuestions.map((q) => ({
         id: `e-src-${q.id}`,
         source: `source-${source.id}`,
+        target: `question-${q.id}`,
+        type: "floating",
+        style: { stroke: "#C4B8A0", strokeWidth: 1.5 },
+      })),
+      ...generalQuestions.map((q) => ({
+        id: `e-ask-${q.id}`,
+        source: askId,
         target: `question-${q.id}`,
         type: "floating",
         style: { stroke: "#C4B8A0", strokeWidth: 1.5 },
@@ -723,7 +757,8 @@ function GraphCanvasInner({
         });
         return;
       }
-      if (node.type === "question") onSelectNode({ type: "question", id: node.id.replace("question-", "") });
+      if (node.type === "ask") onSelectNode({ type: "ask" });
+      else if (node.type === "question") onSelectNode({ type: "question", id: node.id.replace("question-", "") });
       else if (node.type === "card") onSelectNode({ type: "card", id: node.id.replace("card-", "") });
     },
     [level, sources, source?.type, onSelectSpace, onSelectSource, onOpenViewer, onSelectNode, reactFlow, zoomingIntoId, onPrefetchSource, onEnsureSourceGraphReady]
@@ -746,11 +781,12 @@ function GraphCanvasInner({
         }
         if (n.type === "cluster" || n.type === "area") return n;
         const isSelected =
+          (selectedNode?.type === "ask" && n.type === "ask") ||
           (selectedNode?.type === "question" && n.id === `question-${selectedNode.id}`) ||
           (selectedNode?.type === "card" && n.id === `card-${selectedNode.id}`);
 
         // During drill-in, children arrive with the layout — skip stagger so nothing animates twice.
-        const isL3Child = playL3Appear && (n.type === "question" || n.type === "card");
+        const isL3Child = playL3Appear && (n.type === "ask" || n.type === "question" || n.type === "card");
         const appearAnim = isL3Child ? "node-appear 500ms ease 250ms both" : undefined;
 
         return {

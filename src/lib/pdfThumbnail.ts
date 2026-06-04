@@ -8,9 +8,8 @@
 export async function renderFirstPageThumbnail(file: File, targetWidth = 400): Promise<Blob | null> {
   try {
     const { pdfjs } = await import("react-pdf");
-    if (!pdfjs.GlobalWorkerOptions.workerSrc) {
-      pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
-    }
+    const { configurePdfWorker } = await import("@/lib/pdfWorker");
+    configurePdfWorker();
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
     try {

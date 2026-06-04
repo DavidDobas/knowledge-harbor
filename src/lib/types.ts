@@ -25,10 +25,13 @@ export interface Source {
   createdAt: string;
 }
 
+export type QuestionOrigin = "general" | "passage";
+
 export interface Question {
   id: string;
   sourceId: string;
   title: string;
+  origin: QuestionOrigin;
   chunkOffset: number | null;
   pdfPage: number | null;
   pdfHighlightText: string | null;
@@ -57,5 +60,10 @@ export interface KnowledgeCard {
 
 export type SelectedNode =
   | { type: "source"; id: string }
+  | { type: "ask" }
   | { type: "question"; id: string }
   | { type: "card"; id: string };
+
+export function isGeneralQuestion(q: { origin?: QuestionOrigin | string | null }): boolean {
+  return q.origin === "general";
+}

@@ -7,7 +7,9 @@ import PDFSelectionPanel from "@/components/panels/PDFSelectionPanel";
 import NotePanel from "@/components/panels/NotePanel";
 import TranscriptWithChat from "@/components/source/TranscriptWithChat";
 import PdfRightPanel from "@/components/source/PdfRightPanel";
-import type { Source, SelectedNode } from "@/lib/types";
+import GeneralAskPanel from "@/components/panels/GeneralAskPanel";
+import type { Source, SelectedNode, Question } from "@/lib/types";
+import { isGeneralQuestion } from "@/lib/types";
 
 // Right panel default width (used until user resizes). Constant width across all levels
 // keeps the center pane stable so the graph camera doesn't jump when the panel content
@@ -19,6 +21,7 @@ const RIGHT_PANEL_WIDTH_KEY = "kh.rightPanel.width";
 
 interface Props {
   activeSource: Source | null;
+  sourceQuestions: Question[];
   selectedNode: SelectedNode | null;
   activeChunkIdx: number;
   viewMode: "graph" | "viewer";
@@ -32,13 +35,15 @@ interface Props {
   onOpenSource: (sourceId: string) => void;
   pendingInitialMessage: { questionId: string; message: string; passage?: string; page?: number } | null;
   onPdfQuestionCreated: (questionId: string, message: string, passage: string, page: number) => void;
+  onGeneralQuestionCreated: (questionId: string, message: string) => void;
+  onClearPendingInitialMessage?: () => void;
 }
 
 export default function RightPanel({
-  activeSource, selectedNode, activeChunkIdx, viewMode, onSeekTo,
+  activeSource, sourceQuestions, selectedNode, activeChunkIdx, viewMode, onSeekTo,
   onSelectNode, onGraphRefresh, onActiveSourceUpdate,
   pdfSelection, onClearPdfSelection, onOpenThread, onOpenSource,
-  pendingInitialMessage, onPdfQuestionCreated,
+  pendingInitialMessage, onPdfQuestionCreated, onGeneralQuestionCreated, onClearPendingInitialMessage,
 }: Props) {
   const isYoutube = activeSource?.type === "youtube";
   const isPdf = activeSource?.type === "pdf";
@@ -118,6 +123,24 @@ export default function RightPanel({
     </div>
   );
 
+  const selectedQuestion =
+    selectedNode?.type === "question"
+      ? sourceQuestions.find((q) => q.id === selectedNode.id)
+      : null;
+
+  const pendingForThread =
+    selectedNode?.type === "question" &&
+    pendingInitialMessage?.questionId === selectedNode.id
+      ? pendingInitialMessage
+      : null;
+
+  const useQuestionPanel =
+    selectedNode?.type === "question" &&
+    activeSource &&
+    (!isYoutube ||
+      pendingForThread != null ||
+      (selectedQuestion != null && isGeneralQuestion(selectedQuestion)));
+
   function renderContent() {
     // Knowledge card — same panel regardless of source type.
     if (selectedNode?.type === "card") {
@@ -129,10 +152,38 @@ export default function RightPanel({
       );
     }
 
-    // YouTube source → always TranscriptWithChat (even without a transcript, so Notes/Summary
-    // and the in-tab "Retry transcript fetch" affordance stay reachable). It also renders the
-    // thread view when a question node is selected, so creating and reopening a thread look
-    // identical. This must come before the generic question-node branch below.
+    // Ask hub — new general thread (one thread per submit).
+    if (selectedNode?.type === "ask" && activeSource) {
+      return (
+        <GeneralAskPanel
+          source={activeSource}
+          onQuestionCreated={onGeneralQuestionCreated}
+          onDismiss={() => onSelectNode(null)}
+        />
+      );
+    }
+
+    // General or PDF/note threads, and new Ask threads (pendingInitialMessage before graph refresh).
+    if (useQuestionPanel && selectedNode?.type === "question") {
+      return (
+        <>
+          <BackButton label={isYoutube ? "Back" : "Back"} />
+          <QuestionPanel
+            key={selectedNode.id}
+            questionId={selectedNode.id}
+            initialMessage={pendingForThread?.message}
+            initialPassage={pendingForThread?.passage}
+            initialPage={pendingForThread?.page}
+            source={activeSource}
+            onSummarized={() => { onGraphRefresh(); onSelectNode(null); }}
+            onGraphRefresh={onGraphRefresh}
+            onPendingMessageSent={() => onClearPendingInitialMessage?.()}
+          />
+        </>
+      );
+    }
+
+    // YouTube — transcript tabs; passage threads use chunk chat inside TranscriptWithChat.
     if (isYoutube && activeSource) {
       return (
         <TranscriptWithChat
@@ -150,27 +201,6 @@ export default function RightPanel({
           externalQuestionId={selectedNode?.type === "question" ? selectedNode.id : null}
           onCloseThread={() => onSelectNode(null)}
         />
-      );
-    }
-
-    // PDF question thread (no transcript chunk; uses QuestionPanel).
-    if (selectedNode?.type === "question") {
-      const pending =
-        pendingInitialMessage?.questionId === selectedNode.id ? pendingInitialMessage : null;
-      return (
-        <>
-          <BackButton label="Back" />
-          <QuestionPanel
-            key={selectedNode.id}
-            questionId={selectedNode.id}
-            initialMessage={pending?.message}
-            initialPassage={pending?.passage}
-            initialPage={pending?.page}
-            source={activeSource}
-            onSummarized={() => { onGraphRefresh(); onSelectNode(null); }}
-            onGraphRefresh={onGraphRefresh}
-          />
-        </>
       );
     }
 

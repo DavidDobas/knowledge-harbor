@@ -36,6 +36,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     summary: source?.summary ?? null,
     hasFileContext: fileId != null,
     hasWebSearch: question?.includeWeb === true,
+    sourceType: source?.type ?? null,
+    notes: source?.notes ?? null,
   });
 
   // Build the input array as a conversation. The first user message carries the input_file

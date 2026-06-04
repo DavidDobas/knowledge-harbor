@@ -15,6 +15,7 @@ interface Props {
   initialPassage?: string;
   initialPage?: number;
   source?: Source | null;
+  onPendingMessageSent?: () => void;
 }
 
 function MarkdownMessage({ content }: { content: string }) {
@@ -25,7 +26,7 @@ function MarkdownMessage({ content }: { content: string }) {
   );
 }
 
-export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh, initialMessage, initialPassage, initialPage, source }: Props) {
+export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh, initialMessage, initialPassage, initialPage, source, onPendingMessageSent }: Props) {
   const [question, setQuestion] = useState<Question | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
@@ -33,6 +34,7 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
   const [streaming, setStreaming] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
   const [streamBuffer, setStreamBuffer] = useState("");
+  const [sendError, setSendError] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -48,6 +50,7 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
   }
 
   async function doSend(content: string) {
+    setSendError(null);
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), questionId, role: "user", content, createdAt: new Date().toISOString() }]);
     setStreaming(true);
     setStreamBuffer("");
@@ -58,7 +61,13 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
       body: JSON.stringify({ content }),
     });
 
-    const reader = res.body!.getReader();
+    if (!res.ok || !res.body) {
+      setStreaming(false);
+      setSendError("Failed to get a response — try again.");
+      return;
+    }
+
+    const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let full = "";
 
@@ -81,12 +90,20 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
   }
 
   useEffect(() => {
+    initialSent.current = false;
+    setMessagesLoaded(false);
+    setMessages([]);
+    setStreaming(false);
+    setStreamBuffer("");
+    setSendError(null);
+
     fetch(`/api/questions/${questionId}`).then((r) => r.json()).then(setQuestion);
     fetch(`/api/questions/${questionId}/messages`).then((r) => r.json()).then((msgs: Message[]) => {
       setMessages(msgs);
       setMessagesLoaded(true);
       if (msgs.length === 0 && initialMessage && !initialSent.current) {
         initialSent.current = true;
+        onPendingMessageSent?.();
         doSend(initialMessage);
       }
     });
@@ -235,13 +252,20 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
           </div>
         ))}
 
+        {sendError && (
+          <p className="text-xs" style={{ color: "#c0392b" }}>{sendError}</p>
+        )}
         {streaming && (
           <div className="flex flex-col gap-1">
             <span className="type-mono text-xs" style={{ color: "var(--accent)", fontSize: "0.68rem", letterSpacing: "0.05em", textTransform: "uppercase" }}>
               Assistant
             </span>
             <div className="prose-answer text-sm" style={{ color: "var(--foreground)" }}>
-              <ChatMarkdown content={streamBuffer} />
+              {streamBuffer ? (
+                <ChatMarkdown content={streamBuffer} />
+              ) : (
+                <span style={{ color: "var(--muted)" }}>Thinking…</span>
+              )}
               <span className="animate-pulse ml-0.5" style={{ color: "var(--accent)" }}>▊</span>
             </div>
           </div>

@@ -27,6 +27,8 @@ export const questions = pgTable("questions", {
   id: uuid("id").primaryKey().defaultRandom(),
   sourceId: uuid("source_id").references(() => sources.id, { onDelete: "cascade" }).notNull(),
   title: text("title").notNull(),
+  // "general" = started from the Ask hub (whole-source context); "passage" = transcript/PDF selection.
+  origin: text("origin").notNull().default("passage"),
   context: text("context"),
   chunkOffset: integer("chunk_offset"),
   pdfPage: integer("pdf_page"),
