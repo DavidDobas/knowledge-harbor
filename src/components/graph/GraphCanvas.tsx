@@ -60,6 +60,8 @@ interface Props {
   level: 1 | 2 | 3;
   spaces: Space[];
   sources: Source[];
+  // Level 2 only:
+  space?: Space | null;
   // Level 3 only:
   source?: Source | null;
   questions?: Question[];
@@ -82,6 +84,7 @@ interface Props {
   onOpenViewer: () => void;
   onGraphRefresh: () => void;
   onLayoutPersisted?: (graphLayout: string) => void;
+  onSpaceLayoutPersisted?: (graphLayout: string) => void;
 }
 
 // Layout sizes — keep source the same size at L3 as it is in clusters (L1) so the
@@ -355,10 +358,10 @@ export default function GraphCanvas(props: Props) {
 }
 
 function GraphCanvasInner({
-  level, spaces, sources, source, questions = [], cards = [],
+  level, spaces, sources, space, source, questions = [], cards = [],
   drillInTransition = false, onDrillInComplete, onPrefetchSource, onEnsureSourceGraphReady,
   selectedNode, onSelectNode, onSelectSpace, onSelectSource, onOpenViewer, onGraphRefresh,
-  onLayoutPersisted,
+  onLayoutPersisted, onSpaceLayoutPersisted,
 }: Props) {
   const reactFlow = useReactFlow();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -377,6 +380,10 @@ function GraphCanvasInner({
     sourceId: "",
     graphLayout: null,
   });
+  const spaceLayoutCacheRef = useRef<{ spaceId: string; graphLayout: string | null }>({
+    spaceId: "",
+    graphLayout: null,
+  });
   const prevLevelRef = useRef(level);
 
   // Reset camera init when navigating between levels — but not mid drill-in.
@@ -391,10 +398,10 @@ function GraphCanvasInner({
   }, [level, drillInTransition]);
 
   // Persist user-dragged node positions + custom areas.
-  // L3 (a source's graph) is saved to the DB on the source row so it syncs across devices.
-  // L2 (sources within a space) falls back to localStorage (per-device, positions only).
+  // L3 (a source's graph) and L2 (sources within a space) are saved to the DB so they sync across devices.
+  // L2 also reads legacy per-device position-only localStorage when no DB layout exists yet.
   const posKey =
-    level === 2 ? `kh.pos.space.${sources[0]?.spaceId ?? "root"}` : null;
+    level === 2 ? `kh.pos.space.${space?.id ?? sources[0]?.spaceId ?? "root"}` : null;
 
   // Returns { positions, areas }. Handles the legacy format where graphLayout was a bare
   // positions map (no `positions`/`areas` keys).
@@ -413,14 +420,30 @@ function GraphCanvasInner({
         return { positions: parsed ?? {}, areas: [] }; // legacy: whole object is the positions map
       } catch { return { positions: {}, areas: [] }; }
     }
-    if (posKey) {
-      try {
-        const raw = window.localStorage.getItem(posKey);
-        return { positions: raw ? JSON.parse(raw) : {}, areas: [] };
-      } catch { return { positions: {}, areas: [] }; }
+    if (level === 2 && space) {
+      const raw =
+        spaceLayoutCacheRef.current.spaceId === space.id
+          ? spaceLayoutCacheRef.current.graphLayout ?? space.graphLayout
+          : space.graphLayout;
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && (parsed.positions || parsed.areas)) {
+            return { positions: parsed.positions ?? {}, areas: parsed.areas ?? [] };
+          }
+          return { positions: parsed ?? {}, areas: [] };
+        } catch { /* fall through to localStorage */ }
+      }
+      if (posKey) {
+        try {
+          const legacy = window.localStorage.getItem(posKey);
+          return { positions: legacy ? JSON.parse(legacy) : {}, areas: [] };
+        } catch { return { positions: {}, areas: [] }; }
+      }
+      return { positions: {}, areas: [] };
     }
     return { positions: {}, areas: [] };
-  }, [level, source, posKey]);
+  }, [level, source, space, posKey]);
 
   const persistLayout = useCallback((ns: Node[]) => {
     const positions: Record<string, { x: number; y: number }> = {};
@@ -453,10 +476,18 @@ function GraphCanvasInner({
       }).catch(() => {});
       return;
     }
-    if (posKey) {
-      try { window.localStorage.setItem(posKey, JSON.stringify(positions)); } catch { /* ignore */ }
+    if (level === 2 && space) {
+      const graphLayout = JSON.stringify({ positions, areas });
+      spaceLayoutCacheRef.current = { spaceId: space.id, graphLayout };
+      queueMicrotask(() => onSpaceLayoutPersisted?.(graphLayout));
+      fetch(`/api/spaces/${space.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ graphLayout }),
+      }).catch(() => {});
+      return;
     }
-  }, [level, source, posKey, onLayoutPersisted]);
+  }, [level, source, space, onLayoutPersisted, onSpaceLayoutPersisted]);
 
   const requestDelete = useCallback((nodeType: PendingDelete["nodeType"], id: string, label: string) => {
     setPendingDelete({ nodeType, id, label });
@@ -624,7 +655,7 @@ function GraphCanvasInner({
     );
 
     // Area nodes go first so they render behind the questions/cards/source.
-    const areaNodes = (level === 3 ? areas : []).map(buildAreaNode);
+    const areaNodes = (level === 3 || level === 2 ? areas : []).map(buildAreaNode);
     setNodes([...areaNodes, ...positioned]);
     setEdges(built.edges);
     l3LayoutReadyRef.current = level === 3;
@@ -846,8 +877,8 @@ function GraphCanvasInner({
         />
       </ReactFlow>
 
-      {/* Add-area button (single-source graph only) */}
-      {level === 3 && (
+      {/* Add-area button (space graph + single-source graph) */}
+      {(level === 3 || level === 2) && (
         <button
           onClick={addArea}
           className="absolute top-3 left-3 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full type-mono shadow-sm transition-opacity hover:opacity-80"
@@ -858,7 +889,7 @@ function GraphCanvasInner({
             color: "var(--text-secondary)",
             border: "1px solid var(--border)",
           }}
-          title="Add an area to organize questions"
+          title={level === 2 ? "Add an area to organize sources" : "Add an area to organize questions"}
         >
           <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <rect x="3" y="3" width="18" height="18" rx="2" />

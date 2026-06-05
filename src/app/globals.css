@@ -30,6 +30,10 @@
   body { background: #F2EDE1; color: #1A1917; }
 }
 
+html {
+  background: #F2EDE1;
+}
+
 body {
   margin: 0;
   overflow: hidden;
@@ -42,6 +46,7 @@ body {
 .workspace-tab-scroll {
   scrollbar-width: none;
 }
+
 .workspace-tab-scroll::-webkit-scrollbar {
   display: none;
 }

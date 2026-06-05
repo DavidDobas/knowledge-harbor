@@ -3,6 +3,7 @@ export type SourceType = "pdf" | "youtube" | "note";
 export interface Space {
   id: string;
   name: string;
+  graphLayout: string | null;
   createdAt: string;
 }
 

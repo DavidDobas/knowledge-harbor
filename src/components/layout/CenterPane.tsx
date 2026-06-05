@@ -38,6 +38,7 @@ interface Props {
   onRegisterSeek: (fn: (ms: number) => void) => void;
   onPdfTextSelect: (text: string, page: number, rects: { x:number; y:number; w:number; h:number }[]) => void;
   onActiveSourceUpdate: (updates: Partial<Source>) => void;
+  onSpaceLayoutPersisted?: (spaceId: string, graphLayout: string) => void;
   onClearPdfSelection: () => void;
   pdfSelection: { text: string; page: number; rects: { x:number; y:number; w:number; h:number }[] } | null;
 }
@@ -48,10 +49,15 @@ export default function CenterPane({
   selectedSpaceId, selectedNode, viewMode, onSetViewMode,
   onSelectNode, onSelectSpace, onSelectSource, onGraphRefresh,
   onActiveChunkIdxChange, onRegisterSeek,
-  onPdfTextSelect, onClearPdfSelection, onActiveSourceUpdate, pdfSelection,
+  onPdfTextSelect, onClearPdfSelection, onActiveSourceUpdate, onSpaceLayoutPersisted, pdfSelection,
 }: Props) {
 
   const level: 1 | 2 | 3 = activeSource ? 3 : selectedSpaceId ? 2 : 1;
+
+  const activeSpace = useMemo(
+    () => (selectedSpaceId ? spaces.find((s) => s.id === selectedSpaceId) ?? null : null),
+    [spaces, selectedSpaceId],
+  );
 
   // Keep the space-filtered list at L3 too — avoids a mid-transition rebuild when activeSource is set.
   const graphSources = useMemo(() => {
@@ -217,6 +223,7 @@ export default function CenterPane({
           level={level}
           spaces={spaces}
           sources={graphSources}
+          space={activeSpace}
           source={activeSource}
           questions={questions}
           cards={cards}
@@ -231,6 +238,9 @@ export default function CenterPane({
           onOpenViewer={() => onSetViewMode("viewer")}
           onGraphRefresh={onGraphRefresh}
           onLayoutPersisted={(graphLayout) => onActiveSourceUpdate({ graphLayout })}
+          onSpaceLayoutPersisted={(graphLayout) => {
+            if (activeSpace) onSpaceLayoutPersisted?.(activeSpace.id, graphLayout);
+          }}
         />
       </div>
     </div>

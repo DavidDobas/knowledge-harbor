@@ -16,8 +16,12 @@ export default function AreaNode({ data, selected }: NodeProps) {
   const [val, setVal] = useState(d.label);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { setVal(d.label); }, [d.label]);
   useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
+
+  function startEdit() {
+    setVal(d.label);
+    setEditing(true);
+  }
 
   function commit() {
     setEditing(false);
@@ -75,7 +79,7 @@ export default function AreaNode({ data, selected }: NodeProps) {
             />
           ) : (
             <span
-              onDoubleClick={() => setEditing(true)}
+              onDoubleClick={startEdit}
               title="Double-click to rename"
               className="nodrag type-serif font-semibold truncate"
               style={{ fontSize: "0.85rem", color: "var(--foreground)", flex: 1, cursor: "text" }}

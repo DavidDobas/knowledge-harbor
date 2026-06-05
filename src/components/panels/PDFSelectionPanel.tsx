@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import WebSearchToggle from "@/components/source/WebSearchToggle";
+import ChatInput from "@/components/ui/ChatInput";
 
 interface Props {
   selectedText: string;
@@ -90,51 +92,17 @@ export default function PDFSelectionPanel({ selectedText, page, rects, sourceId,
               </button>
             </div>
           )}
-          {/* Web search toggle — opt-in. Looks like the file chip when enabled (× to disable),
-              like a ghost button when off (click to enable). */}
-          <button
-            onClick={() => setIncludeWeb((v) => !v)}
-            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border transition-colors"
-            style={
-              includeWeb
-                ? { background: "var(--accent-light)", borderColor: "color-mix(in srgb, var(--accent) 25%, transparent)", color: "var(--accent)" }
-                : { background: "transparent", borderColor: "var(--border)", color: "var(--muted)" }
-            }
-            title={includeWeb ? "Web search enabled — click to disable" : "Enable web search for this thread"}
-          >
-            <span style={{ fontSize: "0.85rem" }}>🌐</span>
-            <span className="type-mono" style={{ fontSize: "0.7rem" }}>
-              Web search
-            </span>
-            {includeWeb && (
-              <span style={{ fontSize: "0.85rem", lineHeight: 1 }}>×</span>
-            )}
-          </button>
+          <WebSearchToggle enabled={includeWeb} onChange={setIncludeWeb} disabled={creating} />
         </div>
-        <div className="flex gap-2">
-          <input
-            autoFocus
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-            placeholder="e.g. What does this mean?"
-            disabled={creating}
-            className="flex-1 text-sm px-3 py-2 rounded-lg border outline-none disabled:opacity-50"
-            style={{ background: "var(--background)", borderColor: "var(--border)", color: "var(--foreground)" }}
-          />
-          <button
-            onClick={submit}
-            disabled={creating || !input.trim()}
-            className="shrink-0 w-9 h-9 flex items-center justify-center rounded-lg disabled:opacity-40 hover:opacity-90"
-            style={{ background: "var(--accent)", color: "#fff" }}
-          >
-            {creating ? <span className="text-xs">…</span> : (
-              <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                <path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z" />
-              </svg>
-            )}
-          </button>
-        </div>
+        <ChatInput
+          value={input}
+          onChange={setInput}
+          onSend={submit}
+          placeholder="e.g. What does this mean?"
+          disabled={creating}
+          sending={creating}
+          autoFocus
+        />
       </div>
     </div>
   );

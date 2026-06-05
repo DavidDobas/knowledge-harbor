@@ -57,7 +57,7 @@ export default function Home() {
 
   const fetchFullSourceDetails = useCallback((sourceId: string, tabId?: string) => {
     fetch(`/api/sources/${sourceId}`)
-      .then((r) => r.json())
+      .then((r) => r.ok ? r.json() : Promise.reject(r.status))
       .then((full) => {
         if (!full?.id) return;
         const id = tabId ?? activeTabIdRef.current;
@@ -80,7 +80,10 @@ export default function Home() {
     const cached = graphDataCache.current.get(sourceId);
     if (cached) return Promise.resolve(cached);
     return fetch(`/api/sources/${sourceId}/graph`)
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`graph fetch failed: ${r.status}`);
+        return r.json();
+      })
       .then((data) => {
         const result = {
           questions: Array.isArray(data.questions) ? data.questions as Question[] : [],
@@ -89,7 +92,8 @@ export default function Home() {
         };
         graphDataCache.current.set(sourceId, result);
         return result;
-      });
+      })
+      .catch(() => ({ questions: [], cards: [], source: undefined }));
   }, []);
 
   const prefetchSourceGraph = useCallback((source: Source) => {
@@ -159,6 +163,23 @@ export default function Home() {
       if (t.id !== id || !t.activeSource) return t;
       return { ...t, activeSource: { ...t.activeSource, ...updates } };
     }));
+  }, []);
+
+  const handleSpaceLayoutPersisted = useCallback((spaceId: string, graphLayout: string) => {
+    setSpaces((prev) => prev.map((s) => (s.id === spaceId ? { ...s, graphLayout } : s)));
+  }, []);
+
+  const handleSourceTitleChange = useCallback((sourceId: string, title: string) => {
+    const tabId = activeTabIdRef.current;
+    setTabs((prev) => prev.map((t) => {
+      if (t.id !== tabId) return t;
+      return {
+        ...t,
+        label: t.activeSourceId === sourceId ? title : t.label,
+        activeSource: t.activeSource?.id === sourceId ? { ...t.activeSource, title } : t.activeSource,
+      };
+    }));
+    setAllSources((prev) => prev.map((s) => (s.id === sourceId ? { ...s, title } : s)));
   }, []);
 
   // Restore tabs from localStorage after mount (keeps SSR and first client paint identical).
@@ -385,6 +406,7 @@ export default function Home() {
                   }}
                   onClearPdfSelection={() => patchTab(tab.id, { pdfSelection: null })}
                   onActiveSourceUpdate={visible ? updateActiveSource : () => {}}
+                  onSpaceLayoutPersisted={visible ? handleSpaceLayoutPersisted : undefined}
                   pdfSelection={tab.pdfSelection}
                 />
                 <RightPanel
@@ -445,6 +467,7 @@ export default function Home() {
                     }
                   }}
                   onClearPendingInitialMessage={() => patchTab(tab.id, { pendingInitialMessage: null })}
+                  onSourceTitleChange={visible ? handleSourceTitleChange : undefined}
                 />
               </div>
             );

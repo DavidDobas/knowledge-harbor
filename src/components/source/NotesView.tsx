@@ -108,7 +108,33 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
   ref
 ) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [bubbleStyle, setBubbleStyle] = useState<{ top: number; left: number } | null>(null);
+
+  const BUBBLE_H = 36;
+  const BUBBLE_GAP = 8;
+
+  function updateBubblePosition(ed: Editor) {
+    const { empty, from, to } = ed.state.selection;
+    if (empty || from === to) {
+      setBubbleStyle(null);
+      return;
+    }
+    try {
+      const start = ed.view.coordsAtPos(from);
+      const end = ed.view.coordsAtPos(to);
+      const selLeft = Math.min(start.left, end.left);
+      const selRight = Math.max(start.right, end.right);
+      const selTop = Math.min(start.top, end.top);
+      const selBottom = Math.max(start.bottom, end.bottom);
+      const centerX = (selLeft + selRight) / 2;
+      const aboveTop = selTop - BUBBLE_H - BUBBLE_GAP;
+      const top = aboveTop < 8 ? selBottom + BUBBLE_GAP : aboveTop;
+      setBubbleStyle({ top, left: centerX });
+    } catch {
+      setBubbleStyle(null);
+    }
+  }
 
   // @-mention state
   const [allChats, setAllChats] = useState<MentionItem[]>([]);
@@ -253,18 +279,7 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
     },
     onSelectionUpdate: ({ editor }) => {
       detectMention(editor);
-      const { empty, from, to } = editor.state.selection;
-      if (empty || from === to) { setBubbleStyle(null); return; }
-      const domSel = window.getSelection();
-      if (!domSel || domSel.rangeCount === 0) { setBubbleStyle(null); return; }
-      const range = domSel.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
-      const editorDom = editor.view.dom as HTMLElement;
-      const editorRect = editorDom.getBoundingClientRect();
-      setBubbleStyle({
-        top: rect.top - editorRect.top - 44,
-        left: Math.max(0, rect.left + rect.width / 2 - editorRect.left - 100),
-      });
+      updateBubblePosition(editor);
     },
     onBlur: () => setBubbleStyle(null),
   });
@@ -280,6 +295,17 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
         .run();
     },
   }));
+
+  // Keep the bubble menu anchored while the editor scrolls.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !editor) return;
+    const onScroll = () => {
+      if (!editor.state.selection.empty) updateBubblePosition(editor);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [editor]);
 
   // Handle chunk:// and thread:// link clicks inside the editor
   useEffect(() => {
@@ -384,15 +410,16 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
 
   return (
     <div className="relative flex flex-col h-full min-h-0 overflow-hidden">
-      {/* Bubble menu (appears on text selection) */}
-      {editor && bubbleStyle && (
+      {/* Bubble menu — portaled with fixed coords so scroll + panel layout don't skew it */}
+      {editor && bubbleStyle && createPortal(
         <div
-          className="absolute z-50 flex items-center gap-0.5 px-1.5 py-1 rounded-lg shadow-xl pointer-events-auto"
+          className="fixed z-[100] flex items-center gap-0.5 px-1.5 py-1 rounded-lg shadow-xl pointer-events-auto"
           style={{
             background: "#1A1917",
             border: "1px solid rgba(255,255,255,0.1)",
             top: bubbleStyle.top,
             left: bubbleStyle.left,
+            transform: "translateX(-50%)",
           }}
         >
           <BubbleBtn onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive("bold")} label="B" title="Bold" className="font-bold" />
@@ -405,7 +432,8 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
           <BubbleBtn onClick={() => editor.chain().focus().toggleBulletList().run()} active={editor.isActive("bulletList")} label="•" title="Bullet list" />
           <BubbleBtn onClick={() => editor.chain().focus().toggleOrderedList().run()} active={editor.isActive("orderedList")} label="1." title="Numbered list" />
           <BubbleBtn onClick={() => editor.chain().focus().toggleBlockquote().run()} active={editor.isActive("blockquote")} label="❝" title="Quote" />
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* @-mention dropdown — portaled to body so a transformed ancestor (the sliding
@@ -512,6 +540,7 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
 
       {/* Editor canvas */}
       <div
+        ref={scrollRef}
         className="flex-1 overflow-y-auto min-h-0"
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {

@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import WebSearchToggle from "@/components/source/WebSearchToggle";
+import ChatInput from "@/components/ui/ChatInput";
 import type { Source } from "@/lib/types";
 
 interface Props {
@@ -18,6 +20,7 @@ const HINTS: Record<Source["type"], string> = {
 export default function GeneralAskPanel({ source, onQuestionCreated, onDismiss }: Props) {
   const [message, setMessage] = useState("");
   const [creating, setCreating] = useState(false);
+  const [includeWeb, setIncludeWeb] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit() {
@@ -34,6 +37,7 @@ export default function GeneralAskPanel({ source, onQuestionCreated, onDismiss }
           title: text,
           origin: "general",
           includeFile: source.type === "pdf",
+          includeWeb,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -72,32 +76,18 @@ export default function GeneralAskPanel({ source, onQuestionCreated, onDismiss }
         {error && (
           <p className="text-xs mb-2" style={{ color: "#c0392b" }}>{error}</p>
         )}
-        <div className="flex gap-2">
-          <input
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); } }}
-            placeholder="What do you want to know?"
-            disabled={creating}
-            autoFocus
-            className="flex-1 text-sm px-3 py-2 rounded-lg border outline-none disabled:opacity-50"
-            style={{ background: "var(--background)", borderColor: "var(--border)", color: "var(--foreground)" }}
-          />
-          <button
-            onClick={handleSubmit}
-            disabled={creating || !message.trim()}
-            className="shrink-0 w-9 h-9 flex items-center justify-center rounded-lg disabled:opacity-40 hover:opacity-90"
-            style={{ background: "var(--accent)", color: "#fff" }}
-          >
-            {creating ? (
-              <span className="text-xs">…</span>
-            ) : (
-              <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                <path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z" />
-              </svg>
-            )}
-          </button>
+        <div className="mb-2">
+          <WebSearchToggle enabled={includeWeb} onChange={setIncludeWeb} disabled={creating} />
         </div>
+        <ChatInput
+          value={message}
+          onChange={setMessage}
+          onSend={handleSubmit}
+          placeholder="What do you want to know?"
+          disabled={creating}
+          sending={creating}
+          autoFocus
+        />
       </div>
     </div>
   );
