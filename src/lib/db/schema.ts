@@ -3,6 +3,7 @@ import { pgTable, text, timestamp, uuid, integer, boolean } from "drizzle-orm/pg
 export const spaces = pgTable("spaces", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
+  graphLayout: text("graph_layout"), // JSON { positions, areas } for the space-level source graph
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import WebSearchToggle from "@/components/source/WebSearchToggle";
 import type { Source } from "@/lib/types";
 
 interface Props {
@@ -18,6 +19,7 @@ const HINTS: Record<Source["type"], string> = {
 export default function GeneralAskPanel({ source, onQuestionCreated, onDismiss }: Props) {
   const [message, setMessage] = useState("");
   const [creating, setCreating] = useState(false);
+  const [includeWeb, setIncludeWeb] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit() {
@@ -34,6 +36,7 @@ export default function GeneralAskPanel({ source, onQuestionCreated, onDismiss }
           title: text,
           origin: "general",
           includeFile: source.type === "pdf",
+          includeWeb,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -72,6 +75,9 @@ export default function GeneralAskPanel({ source, onQuestionCreated, onDismiss }
         {error && (
           <p className="text-xs mb-2" style={{ color: "#c0392b" }}>{error}</p>
         )}
+        <div className="mb-2">
+          <WebSearchToggle enabled={includeWeb} onChange={setIncludeWeb} disabled={creating} />
+        </div>
         <div className="flex gap-2">
           <input
             value={message}

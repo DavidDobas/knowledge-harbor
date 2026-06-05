@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import WebSearchToggle from "@/components/source/WebSearchToggle";
 
 interface Props {
   selectedText: string;
@@ -90,26 +91,7 @@ export default function PDFSelectionPanel({ selectedText, page, rects, sourceId,
               </button>
             </div>
           )}
-          {/* Web search toggle — opt-in. Looks like the file chip when enabled (× to disable),
-              like a ghost button when off (click to enable). */}
-          <button
-            onClick={() => setIncludeWeb((v) => !v)}
-            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border transition-colors"
-            style={
-              includeWeb
-                ? { background: "var(--accent-light)", borderColor: "color-mix(in srgb, var(--accent) 25%, transparent)", color: "var(--accent)" }
-                : { background: "transparent", borderColor: "var(--border)", color: "var(--muted)" }
-            }
-            title={includeWeb ? "Web search enabled — click to disable" : "Enable web search for this thread"}
-          >
-            <span style={{ fontSize: "0.85rem" }}>🌐</span>
-            <span className="type-mono" style={{ fontSize: "0.7rem" }}>
-              Web search
-            </span>
-            {includeWeb && (
-              <span style={{ fontSize: "0.85rem", lineHeight: 1 }}>×</span>
-            )}
-          </button>
+          <WebSearchToggle enabled={includeWeb} onChange={setIncludeWeb} disabled={creating} />
         </div>
         <div className="flex gap-2">
           <input

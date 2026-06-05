@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import ChatMarkdown from "@/components/source/ChatMarkdown";
+import WebSearchToggle from "@/components/source/WebSearchToggle";
 import type { Message, Question, Source } from "@/lib/types";
 
 interface Props {
@@ -90,13 +91,6 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
   }
 
   useEffect(() => {
-    initialSent.current = false;
-    setMessagesLoaded(false);
-    setMessages([]);
-    setStreaming(false);
-    setStreamBuffer("");
-    setSendError(null);
-
     fetch(`/api/questions/${questionId}`).then((r) => r.json()).then(setQuestion);
     fetch(`/api/questions/${questionId}/messages`).then((r) => r.json()).then((msgs: Message[]) => {
       setMessages(msgs);
@@ -153,6 +147,15 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
       setQuestion(updated);
       onGraphRefresh?.();
     }
+  }
+
+  async function patchThreadSettings(patch: { includeWeb?: boolean; includeFile?: boolean }) {
+    const res = await fetch(`/api/questions/${questionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (res.ok) setQuestion(await res.json());
   }
 
   // Prefer the canonical row once it's loaded; fall back to the props handed in from
@@ -275,26 +278,44 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
 
       {/* Input */}
       <div className="px-5 py-3 border-t shrink-0" style={{ borderColor: "var(--border)" }}>
-        {(source?.type === "pdf" && question?.includeFile) || question?.includeWeb ? (
-          <div className="mb-2 flex flex-wrap items-center gap-1.5">
-            {source?.type === "pdf" && question?.includeFile && (
-              <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border" style={{ background: "var(--accent-light)", borderColor: "color-mix(in srgb, var(--accent) 25%, transparent)" }}>
-                <span style={{ fontSize: "0.85rem" }}>📄</span>
-                <span className="type-mono truncate max-w-[260px]" style={{ fontSize: "0.7rem", color: "var(--accent)" }} title={source.title}>
-                  {source.title}
-                </span>
-              </div>
-            )}
-            {question?.includeWeb && (
-              <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border" style={{ background: "var(--accent-light)", borderColor: "color-mix(in srgb, var(--accent) 25%, transparent)" }} title="Web search enabled for this thread">
-                <span style={{ fontSize: "0.85rem" }}>🌐</span>
-                <span className="type-mono" style={{ fontSize: "0.7rem", color: "var(--accent)" }}>
-                  Web search
-                </span>
-              </div>
-            )}
-          </div>
-        ) : null}
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          {source?.type === "pdf" && question?.includeFile && (
+            <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border" style={{ background: "var(--accent-light)", borderColor: "color-mix(in srgb, var(--accent) 25%, transparent)" }}>
+              <span style={{ fontSize: "0.85rem" }}>📄</span>
+              <span className="type-mono truncate max-w-[260px]" style={{ fontSize: "0.7rem", color: "var(--accent)" }} title={source.title}>
+                {source.title}
+              </span>
+              <button
+                type="button"
+                onClick={() => patchThreadSettings({ includeFile: false })}
+                className="ml-0.5 hover:opacity-60 transition-opacity"
+                style={{ color: "var(--accent)", fontSize: "0.85rem", lineHeight: 1 }}
+                title="Remove full-paper context"
+                disabled={streaming}
+              >
+                ×
+              </button>
+            </div>
+          )}
+          {source?.type === "pdf" && question && !question.includeFile && (
+            <button
+              type="button"
+              onClick={() => patchThreadSettings({ includeFile: true })}
+              disabled={streaming}
+              className="type-mono text-xs px-2 py-1 rounded-md border transition-opacity hover:opacity-70 disabled:opacity-40"
+              style={{ borderColor: "var(--border)", color: "var(--muted)", fontSize: "0.7rem" }}
+            >
+              + Attach PDF
+            </button>
+          )}
+          {question && (
+            <WebSearchToggle
+              enabled={question.includeWeb}
+              onChange={(v) => patchThreadSettings({ includeWeb: v })}
+              disabled={streaming}
+            />
+          )}
+        </div>
         <div className="flex gap-2">
         <input
           value={input}

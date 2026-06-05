@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseTranscript, type TranscriptSegment } from "@/lib/youtube";
 import { formatTime } from "@/lib/utils";
 import ChatMarkdown from "@/components/source/ChatMarkdown";
+import WebSearchToggle from "@/components/source/WebSearchToggle";
 import SummaryView from "@/components/source/SummaryView";
 import NotesView, { type NotesViewHandle } from "@/components/source/NotesView";
 import { useSourceNotes } from "@/hooks/useSourceNotes";
@@ -123,6 +124,11 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   const [streaming, setStreaming] = useState(false);
   const [followupInput, setFollowupInput] = useState("");
   const [summarizing, setSummarizing] = useState(false);
+  const [newThreadIncludeWeb, setNewThreadIncludeWeb] = useState(false);
+  const [threadIncludeWebState, setThreadIncludeWebState] = useState<{ questionId: string | null; includeWeb: boolean }>({
+    questionId: null,
+    includeWeb: false,
+  });
 
   // Notes state
   const { notes, loaded: notesLoaded, setNotes } = useSourceNotes(sourceId);
@@ -192,6 +198,35 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
       .catch(() => {});
     return () => { cancelled = true; };
   }, [threadQuestionId]);
+
+  const threadIncludeWeb =
+    threadQuestionId && threadIncludeWebState.questionId === threadQuestionId
+      ? threadIncludeWebState.includeWeb
+      : false;
+
+  useEffect(() => {
+    if (!threadQuestionId) return;
+    let cancelled = false;
+    fetch(`/api/questions/${threadQuestionId}`)
+      .then((r) => r.json())
+      .then((q: { includeWeb?: boolean }) => {
+        if (!cancelled) {
+          setThreadIncludeWebState({ questionId: threadQuestionId, includeWeb: q.includeWeb === true });
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [threadQuestionId]);
+
+  async function patchThreadIncludeWeb(enabled: boolean) {
+    if (!threadQuestionId) return;
+    const res = await fetch(`/api/questions/${threadQuestionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ includeWeb: enabled }),
+    });
+    if (res.ok) setThreadIncludeWebState({ questionId: threadQuestionId, includeWeb: enabled });
+  }
 
   // Scroll chat to bottom on update — but only if the user hasn't scrolled up to read earlier.
   useEffect(() => {
@@ -355,6 +390,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
     setMessagesState({ questionId: null, messages: [] });
     setStreamBuffer("");
     setFollowupInput("");
+    setNewThreadIncludeWeb(false);
     if (chunkQuestions[ci]) {
       setActiveQuestionId(chunkQuestions[ci]);
       setQuestionInput("");
@@ -374,7 +410,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
     const res = await fetch("/api/questions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sourceId, title: questionInput, context, chunkOffset }),
+      body: JSON.stringify({ sourceId, title: questionInput, context, chunkOffset, includeWeb: newThreadIncludeWeb }),
     });
     const question = await res.json();
     setChunkQuestions((prev) => ({ ...prev, [activeQuestionChunkIdx]: question.id }));
@@ -382,6 +418,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
     setCreating(false);
     onGraphRefresh();
     setActiveQuestionId(question.id);
+    setThreadIncludeWebState({ questionId: question.id, includeWeb: newThreadIncludeWeb });
     await streamMessage(question.id, initialMsg);
     // Refresh after streaming completes — by this point the background title generation
     // has finished and the graph node will show the AI-generated title.
@@ -722,6 +759,9 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
               <div className="flex-1" />
               <div className="px-5 py-3 border-t shrink-0" style={{ borderColor: "var(--border)" }}>
                 <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Ask a question about this passage</p>
+                <div className="mb-2">
+                  <WebSearchToggle enabled={newThreadIncludeWeb} onChange={setNewThreadIncludeWeb} disabled={creating} />
+                </div>
                 <div className="flex gap-2">
                   <input
                     ref={inputRef}
@@ -790,7 +830,15 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
                 <div ref={bottomRef} />
               </div>
 
-              <div className="px-5 py-3 border-t shrink-0 flex gap-2" style={{ borderColor: "var(--border)" }}>
+              <div className="px-5 py-3 border-t shrink-0" style={{ borderColor: "var(--border)" }}>
+                <div className="mb-2">
+                  <WebSearchToggle
+                    enabled={threadIncludeWeb}
+                    onChange={patchThreadIncludeWeb}
+                    disabled={streaming}
+                  />
+                </div>
+                <div className="flex gap-2">
                 <input
                   value={followupInput}
                   onChange={(e) => setFollowupInput(e.target.value)}
@@ -810,6 +858,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
                     <path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z" />
                   </svg>
                 </button>
+                </div>
               </div>
             </div>
           )}

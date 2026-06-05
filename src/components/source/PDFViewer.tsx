@@ -49,6 +49,16 @@ const MIN_WIDTH = 240;
 const MAX_WIDTH = 1400;
 const DEFAULT_WIDTH = 540;
 
+function readPersistedPageWidth(): number {
+  if (typeof window === "undefined") return DEFAULT_WIDTH;
+  try {
+    const raw = window.localStorage.getItem(PDF_ZOOM_KEY);
+    const n = raw ? parseInt(raw, 10) : NaN;
+    if (!isNaN(n)) return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, n));
+  } catch { /* ignore */ }
+  return DEFAULT_WIDTH;
+}
+
 // Nearest scrollable ancestor (the viewer's scroll container in CenterPane).
 function getScrollParent(el: HTMLElement | null): HTMLElement | null {
   let node = el?.parentElement ?? null;
@@ -327,8 +337,12 @@ function CommentCard({
 }) {
   const [draft, setDraft] = useState(body);
   const taRef = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { setDraft(body); }, [body, editing]);
   useEffect(() => { if (editing && autoFocus) taRef.current?.focus(); }, [editing, autoFocus]);
+
+  function beginEdit() {
+    setDraft(body);
+    onStartEdit?.();
+  }
 
   return (
     <div
@@ -381,7 +395,7 @@ function CommentCard({
         <div className="flex flex-col gap-1">
           <p style={{ wordBreak: "break-word", whiteSpace: "pre-wrap" }}>{body}</p>
           <div className="flex items-center gap-2 opacity-0 group-hover/cmt:opacity-100 transition-opacity">
-            <button onClick={onStartEdit} className="type-mono" style={{ fontSize: "0.62rem", color: "var(--accent)" }}>edit</button>
+            <button onClick={beginEdit} className="type-mono" style={{ fontSize: "0.62rem", color: "var(--accent)" }}>edit</button>
             <button onClick={onDelete} className="type-mono" style={{ fontSize: "0.62rem", color: "#C0392B" }}>delete</button>
           </div>
         </div>
@@ -396,7 +410,7 @@ export default function PDFViewer({
 }: Props) {
   const [numPages, setNumPages] = useState<number>(0);
   const [selBox, setSelBox] = useState<SelectionBox | null>(null);
-  const [pageWidth, setPageWidth] = useState<number>(DEFAULT_WIDTH);
+  const [pageWidth, setPageWidth] = useState<number>(readPersistedPageWidth);
   const [pendingComment, setPendingComment] = useState<PendingComment | null>(null);
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const wheelFactorRef = useRef(1);
@@ -441,14 +455,6 @@ export default function PDFViewer({
 
   // Track potential clicks vs drags on the highlight layer.
   const downPosRef = useRef<{ x: number; y: number } | null>(null);
-
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(PDF_ZOOM_KEY);
-      const n = raw ? parseInt(raw, 10) : NaN;
-      if (!isNaN(n)) setPageWidth(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, n)));
-    } catch { /* ignore */ }
-  }, []);
 
   useEffect(() => {
     try { window.localStorage.setItem(PDF_ZOOM_KEY, String(pageWidth)); } catch { /* ignore */ }

@@ -161,6 +161,23 @@ export default function Home() {
     }));
   }, []);
 
+  const handleSpaceLayoutPersisted = useCallback((spaceId: string, graphLayout: string) => {
+    setSpaces((prev) => prev.map((s) => (s.id === spaceId ? { ...s, graphLayout } : s)));
+  }, []);
+
+  const handleSourceTitleChange = useCallback((sourceId: string, title: string) => {
+    const tabId = activeTabIdRef.current;
+    setTabs((prev) => prev.map((t) => {
+      if (t.id !== tabId) return t;
+      return {
+        ...t,
+        label: t.activeSourceId === sourceId ? title : t.label,
+        activeSource: t.activeSource?.id === sourceId ? { ...t.activeSource, title } : t.activeSource,
+      };
+    }));
+    setAllSources((prev) => prev.map((s) => (s.id === sourceId ? { ...s, title } : s)));
+  }, []);
+
   // Restore tabs from localStorage after mount (keeps SSR and first client paint identical).
   useEffect(() => {
     const saved = readPersistedWorkspace();
@@ -385,6 +402,7 @@ export default function Home() {
                   }}
                   onClearPdfSelection={() => patchTab(tab.id, { pdfSelection: null })}
                   onActiveSourceUpdate={visible ? updateActiveSource : () => {}}
+                  onSpaceLayoutPersisted={visible ? handleSpaceLayoutPersisted : undefined}
                   pdfSelection={tab.pdfSelection}
                 />
                 <RightPanel
@@ -445,6 +463,7 @@ export default function Home() {
                     }
                   }}
                   onClearPendingInitialMessage={() => patchTab(tab.id, { pendingInitialMessage: null })}
+                  onSourceTitleChange={visible ? handleSourceTitleChange : undefined}
                 />
               </div>
             );

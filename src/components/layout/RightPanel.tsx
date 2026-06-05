@@ -10,14 +10,13 @@ import PdfRightPanel from "@/components/source/PdfRightPanel";
 import GeneralAskPanel from "@/components/panels/GeneralAskPanel";
 import type { Source, SelectedNode, Question } from "@/lib/types";
 import { isGeneralQuestion } from "@/lib/types";
-
-// Right panel default width (used until user resizes). Constant width across all levels
-// keeps the center pane stable so the graph camera doesn't jump when the panel content
-// changes. User-adjusted width persists to localStorage.
-const RIGHT_PANEL_DEFAULT_WIDTH = 380;
-const RIGHT_PANEL_MIN_WIDTH = 280;
-const RIGHT_PANEL_MAX_WIDTH = 720;
-const RIGHT_PANEL_WIDTH_KEY = "kh.rightPanel.width";
+import {
+  RIGHT_PANEL_DEFAULT_WIDTH,
+  RIGHT_PANEL_MIN_WIDTH,
+  RIGHT_PANEL_MAX_WIDTH,
+  RIGHT_PANEL_WIDTH_KEY,
+  readRightPanelWidth,
+} from "@/lib/layout";
 
 interface Props {
   activeSource: Source | null;
@@ -37,6 +36,7 @@ interface Props {
   onPdfQuestionCreated: (questionId: string, message: string, passage: string, page: number) => void;
   onGeneralQuestionCreated: (questionId: string, message: string) => void;
   onClearPendingInitialMessage?: () => void;
+  onSourceTitleChange?: (sourceId: string, title: string) => void;
 }
 
 export default function RightPanel({
@@ -44,26 +44,21 @@ export default function RightPanel({
   onSelectNode, onGraphRefresh, onActiveSourceUpdate,
   pdfSelection, onClearPdfSelection, onOpenThread, onOpenSource,
   pendingInitialMessage, onPdfQuestionCreated, onGeneralQuestionCreated, onClearPendingInitialMessage,
+  onSourceTitleChange,
 }: Props) {
   const isYoutube = activeSource?.type === "youtube";
   const isPdf = activeSource?.type === "pdf";
   const isNote = activeSource?.type === "note";
 
-  // Width state — restored from localStorage on mount, persisted on drag release.
-  const [width, setWidth] = useState<number>(() => {
-    if (typeof window === "undefined") return RIGHT_PANEL_DEFAULT_WIDTH;
-    try {
-      const saved = window.localStorage.getItem(RIGHT_PANEL_WIDTH_KEY);
-      if (!saved) return RIGHT_PANEL_DEFAULT_WIDTH;
-      const n = parseInt(saved, 10);
-      if (isNaN(n)) return RIGHT_PANEL_DEFAULT_WIDTH;
-      return Math.max(RIGHT_PANEL_MIN_WIDTH, Math.min(RIGHT_PANEL_MAX_WIDTH, n));
-    } catch {
-      return RIGHT_PANEL_DEFAULT_WIDTH;
-    }
-  });
+  // SSR and first client paint use the default; restore saved width after mount.
+  const [width, setWidth] = useState(RIGHT_PANEL_DEFAULT_WIDTH);
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  useEffect(() => {
+    const saved = readRightPanelWidth();
+    queueMicrotask(() => setWidth(saved));
+  }, []);
 
   const onDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -235,7 +230,16 @@ export default function RightPanel({
 
     // Note source — full-panel markdown editor.
     if (isNote && activeSource) {
-      return <NotePanel key={activeSource.id} sourceId={activeSource.id} onOpenThread={onOpenThread} onOpenSource={onOpenSource} />;
+      return (
+        <NotePanel
+          key={activeSource.id}
+          sourceId={activeSource.id}
+          title={activeSource.title}
+          onTitleChange={(t) => onSourceTitleChange?.(activeSource.id, t)}
+          onOpenThread={onOpenThread}
+          onOpenSource={onOpenSource}
+        />
+      );
     }
 
     // L1 / L2 — no active source
