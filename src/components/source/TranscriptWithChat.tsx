@@ -1,62 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { parseTranscript, type TranscriptSegment } from "@/lib/youtube";
+import { parseTranscript } from "@/lib/youtube";
 import { formatTime } from "@/lib/utils";
+import { groupIntoChunks, buildContext } from "@/lib/transcriptChunks";
 import ChatMarkdown from "@/components/source/ChatMarkdown";
 import WebSearchToggle from "@/components/source/WebSearchToggle";
 import SummaryView from "@/components/source/SummaryView";
 import NotesView, { type NotesViewHandle } from "@/components/source/NotesView";
 import { useSourceNotes } from "@/hooks/useSourceNotes";
-import type { Message } from "@/lib/types";
+import { useChunkQuestions } from "@/hooks/useSourceQuestions";
+import { useThreadChat } from "@/hooks/useThreadChat";
 
 type Tab = "transcript" | "summary" | "notes";
 type View = "transcript" | "chat";
-
-interface DisplayChunk {
-  text: string;
-  offset: number;
-  segStart: number;
-  segEnd: number;
-}
-
-function groupIntoChunks(segments: TranscriptSegment[]): DisplayChunk[] {
-  const chunks: DisplayChunk[] = [];
-  let i = 0;
-  while (i < segments.length) {
-    const start = i;
-    let text = "";
-    while (i < segments.length) {
-      text += (text ? " " : "") + segments[i].text;
-      i++;
-      if (/[.?!]\s*$/.test(text.trim()) && text.length >= 200) break;
-      if (text.length >= 800) break;
-    }
-    chunks.push({ text, offset: segments[start].offset, segStart: start, segEnd: i - 1 });
-  }
-  return chunks;
-}
-
-function fmtSegs(segments: TranscriptSegment[], from: number, to: number): string {
-  return segments.slice(from, to + 1).map((s) => `[${formatTime(s.offset)}] ${s.text}`).join("\n");
-}
-
-function buildContext(segments: TranscriptSegment[], chunks: DisplayChunk[], chunkIdx: number): string {
-  const chunk = chunks[chunkIdx];
-  const current = fmtSegs(segments, chunk.segStart, chunk.segEnd);
-
-  // Up to 2 preceding chunks, kept separate so the LLM knows what's actually being asked about.
-  const precFrom = Math.max(0, chunkIdx - 2);
-  let preceding = "";
-  if (precFrom < chunkIdx) {
-    preceding = fmtSegs(segments, chunks[precFrom].segStart, chunks[chunkIdx - 1].segEnd);
-  }
-
-  const parts: string[] = [];
-  if (preceding) parts.push(`### PRECEDING CONTEXT (for reference only)\n${preceding}`);
-  parts.push(`### CURRENT PASSAGE (the question is about THIS)\n${current}`);
-  return parts.join("\n\n");
-}
 
 function highlightText(text: string, query: string): React.ReactNode {
   if (!query.trim()) return text;
@@ -107,7 +64,6 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   const [view, setView] = useState<View>("transcript");
 
   // Transcript state
-  const [chunkQuestions, setChunkQuestions] = useState<Record<number, string>>({});
   const [userScrolling, setUserScrolling] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatchCursor, setSearchMatchCursor] = useState(0);
@@ -120,15 +76,9 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   const [activeQuestionId, setActiveQuestionId] = useState<string | null>(null);
   const [questionInput, setQuestionInput] = useState("");
   const [creating, setCreating] = useState(false);
-  const [streamBuffer, setStreamBuffer] = useState("");
-  const [streaming, setStreaming] = useState(false);
   const [followupInput, setFollowupInput] = useState("");
   const [summarizing, setSummarizing] = useState(false);
   const [newThreadIncludeWeb, setNewThreadIncludeWeb] = useState(false);
-  const [threadIncludeWebState, setThreadIncludeWebState] = useState<{ questionId: string | null; includeWeb: boolean }>({
-    questionId: null,
-    includeWeb: false,
-  });
 
   // Notes state
   const { notes, loaded: notesLoaded, setNotes } = useSourceNotes(sourceId);
@@ -152,24 +102,19 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
 
   const segments = useMemo(() => (rawTranscript ? parseTranscript(rawTranscript) : []), [rawTranscript]);
   const chunks = useMemo(() => groupIntoChunks(segments), [segments]);
-
-  // Load persisted questions
-  useEffect(() => {
-    fetch(`/api/questions?sourceId=${sourceId}`)
-      .then((r) => r.json())
-      .then((qs: Array<{ id: string; chunkOffset: number | null }>) => {
-        const map: Record<number, string> = {};
-        qs.forEach((q) => {
-          if (q.chunkOffset == null) return;
-          const ci = chunks.findIndex((c) => c.offset === q.chunkOffset);
-          if (ci >= 0) map[ci] = q.id;
-        });
-        setChunkQuestions(map);
-      })
-      .catch(() => {});
-  }, [sourceId, chunks]);
+  const { chunkQuestions, setChunkQuestions } = useChunkQuestions(sourceId, chunks);
 
   const threadQuestionId = externalQuestionId ?? activeQuestionId;
+  const {
+    messages,
+    includeWeb: threadIncludeWeb,
+    streaming,
+    streamBuffer,
+    streamMessage,
+    patchIncludeWeb: patchThreadIncludeWeb,
+    resetMessages,
+    setIncludeWebForQuestion,
+  } = useThreadChat(threadQuestionId);
   const threadChunkIdx = externalQuestionId
     ? (() => {
         const entry = Object.entries(chunkQuestions).find(([, qid]) => qid === externalQuestionId);
@@ -178,60 +123,10 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
     : activeQuestionChunkIdx;
   const threadView: View = externalQuestionId ? "chat" : view;
 
-  // Load messages when opening an existing thread
-  const [messagesState, setMessagesState] = useState<{ questionId: string | null; messages: Message[] }>({
-    questionId: null,
-    messages: [],
-  });
-  const messages = threadQuestionId && messagesState.questionId === threadQuestionId
-    ? messagesState.messages
-    : [];
-
-  useEffect(() => {
-    if (!threadQuestionId) return;
-    let cancelled = false;
-    fetch(`/api/questions/${threadQuestionId}/messages`)
-      .then((r) => r.json())
-      .then((msgs: Message[]) => {
-        if (!cancelled) setMessagesState({ questionId: threadQuestionId, messages: msgs });
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [threadQuestionId]);
-
-  const threadIncludeWeb =
-    threadQuestionId && threadIncludeWebState.questionId === threadQuestionId
-      ? threadIncludeWebState.includeWeb
-      : false;
-
-  useEffect(() => {
-    if (!threadQuestionId) return;
-    let cancelled = false;
-    fetch(`/api/questions/${threadQuestionId}`)
-      .then((r) => r.json())
-      .then((q: { includeWeb?: boolean }) => {
-        if (!cancelled) {
-          setThreadIncludeWebState({ questionId: threadQuestionId, includeWeb: q.includeWeb === true });
-        }
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [threadQuestionId]);
-
-  async function patchThreadIncludeWeb(enabled: boolean) {
-    if (!threadQuestionId) return;
-    const res = await fetch(`/api/questions/${threadQuestionId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ includeWeb: enabled }),
-    });
-    if (res.ok) setThreadIncludeWebState({ questionId: threadQuestionId, includeWeb: enabled });
-  }
-
   // Scroll chat to bottom on update — but only if the user hasn't scrolled up to read earlier.
   useEffect(() => {
     if (chatPinnedRef.current) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messagesState, streamBuffer]);
+  }, [messages, streamBuffer]);
 
   // Re-pin to the bottom whenever a new message round starts streaming.
   useEffect(() => {
@@ -271,52 +166,6 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   function handleCite(ci: number) {
     notesEditorRef.current?.insertCitation(chunks[ci].offset);
     setTab("notes");
-  }
-
-  async function streamMessage(questionId: string, content: string) {
-    const userMsg: Message = {
-      id: crypto.randomUUID(),
-      questionId,
-      role: "user",
-      content,
-      createdAt: new Date().toISOString(),
-    };
-    setMessagesState((prev) => ({
-      questionId,
-      messages: [...(prev.questionId === questionId ? prev.messages : []), userMsg],
-    }));
-    setStreaming(true);
-    setStreamBuffer("");
-
-    const res = await fetch(`/api/questions/${questionId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
-    });
-
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-    let full = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      full += decoder.decode(value);
-      setStreamBuffer(full);
-    }
-
-    const assistantMsg: Message = {
-      id: crypto.randomUUID(),
-      questionId,
-      role: "assistant",
-      content: full,
-      createdAt: new Date().toISOString(),
-    };
-    setMessagesState((prev) => ({
-      questionId,
-      messages: [...(prev.questionId === questionId ? prev.messages : []), assistantMsg],
-    }));
-    setStreamBuffer("");
-    setStreaming(false);
   }
 
   const filteredItems = useMemo(() => {
@@ -387,8 +236,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
 
   function handleAsk(ci: number) {
     setActiveQuestionChunkIdx(ci);
-    setMessagesState({ questionId: null, messages: [] });
-    setStreamBuffer("");
+    resetMessages();
     setFollowupInput("");
     setNewThreadIncludeWeb(false);
     if (chunkQuestions[ci]) {
@@ -418,8 +266,8 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
     setCreating(false);
     onGraphRefresh();
     setActiveQuestionId(question.id);
-    setThreadIncludeWebState({ questionId: question.id, includeWeb: newThreadIncludeWeb });
-    await streamMessage(question.id, initialMsg);
+    setIncludeWebForQuestion(question.id, newThreadIncludeWeb);
+    await streamMessage(initialMsg);
     // Refresh after streaming completes — by this point the background title generation
     // has finished and the graph node will show the AI-generated title.
     onGraphRefresh();
@@ -429,7 +277,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
     if (!followupInput.trim() || !threadQuestionId || streaming) return;
     const content = followupInput;
     setFollowupInput("");
-    await streamMessage(threadQuestionId, content);
+    await streamMessage(content);
   }
 
   async function summarize() {
@@ -444,8 +292,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
     setView("transcript");
     setActiveQuestionId(null);
     setActiveQuestionChunkIdx(null);
-    setMessagesState({ questionId: null, messages: [] });
-    setStreamBuffer("");
+    resetMessages();
     onCloseThread?.(); // clear the selected graph node, if the thread was opened from there
   }
 

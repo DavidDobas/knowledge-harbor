@@ -8,9 +8,11 @@ interface Props {
   spaceId: string | null;
   onClose: () => void;
   onAdded: () => void;
+  /** Hide PDF tab (mobile Phase 1). */
+  mobileOnly?: boolean;
 }
 
-export default function AddSourceModal({ spaceId, onClose, onAdded }: Props) {
+export default function AddSourceModal({ spaceId, onClose, onAdded, mobileOnly = false }: Props) {
   const [tab, setTab] = useState<"pdf" | "youtube" | "note">("youtube");
   const [title, setTitle] = useState("");
   const [youtubeUrl, setYoutubeUrl] = useState("");
@@ -105,7 +107,7 @@ export default function AddSourceModal({ spaceId, onClose, onAdded }: Props) {
 
         {/* Tabs */}
         <div className="flex gap-2 mb-5">
-          {(["youtube", "pdf", "note"] as const).map((t) => (
+          {(["youtube", "pdf", "note"] as const).filter((t) => !mobileOnly || t !== "pdf").map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}

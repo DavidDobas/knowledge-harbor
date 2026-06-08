@@ -5,7 +5,10 @@ import Sidebar from "@/components/layout/Sidebar";
 import CenterPane from "@/components/layout/CenterPane";
 import RightPanel from "@/components/layout/RightPanel";
 import TabBar from "@/components/layout/TabBar";
-import type { SelectedNode, Source, Space, Question, KnowledgeCard } from "@/lib/types";
+import MobileShell from "@/components/mobile/MobileShell";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { useWorkspaceData } from "@/hooks/useWorkspaceData";
+import type { SelectedNode, Source, Question, KnowledgeCard } from "@/lib/types";
 import {
   TABS_STORAGE_KEY,
   createWorkspaceTab,
@@ -16,30 +19,32 @@ import {
 } from "@/lib/workspaceTabs";
 
 export default function Home() {
+  const { mounted: mobileMounted, isMobile } = useIsMobile();
+  const workspace = useWorkspaceData();
+  const {
+    spaces,
+    setSpaces,
+    allSources,
+    refresh,
+    refreshKey,
+    loadSourceGraphData,
+    graphDataCache,
+    handleRegisterSeek,
+    handleSeekTo,
+    handleSourceTitleChange,
+    fetchFullSource,
+  } = workspace;
+
   const [tabs, setTabs] = useState<WorkspaceTab[]>(DEFAULT_WORKSPACE.tabs);
   const [activeTabId, setActiveTabId] = useState(DEFAULT_WORKSPACE.activeTabId);
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const activeTabIdRef = useRef(activeTabId);
+  const [hydrating, setHydrating] = useState(false);
+  const graphDataLoadedForRef = useRef<string | null>(null);
 
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
   }, [activeTabId]);
-
-  const [spaces, setSpaces] = useState<Space[]>([]);
-  const [allSources, setAllSources] = useState<Source[]>([]);
-  const [refreshKey, setRefreshKey] = useState(0);
-  const [hydrating, setHydrating] = useState(false);
-
-  const graphDataCache = useRef(new Map<string, {
-    questions: Question[];
-    cards: KnowledgeCard[];
-    source?: Source;
-  }>());
-  const graphDataLoadedForRef = useRef<string | null>(null);
-
-  const seekRef = useRef<((ms: number) => void) | null>(null);
-  const handleRegisterSeek = useCallback((fn: (ms: number) => void) => { seekRef.current = fn; }, []);
-  const handleSeekTo = useCallback((ms: number) => { seekRef.current?.(ms); }, []);
 
   const activeTab = useMemo(
     () => tabs.find((t) => t.id === activeTabId) ?? tabs[0],
@@ -70,27 +75,10 @@ export default function Home() {
       .catch(() => {});
   }, []);
 
-  const refresh = () => {
-    graphDataCache.current.clear();
+  const desktopRefresh = useCallback(() => {
     graphDataLoadedForRef.current = null;
-    setRefreshKey((k) => k + 1);
-  };
-
-  const loadSourceGraphData = useCallback((sourceId: string) => {
-    const cached = graphDataCache.current.get(sourceId);
-    if (cached) return Promise.resolve(cached);
-    return fetch(`/api/sources/${sourceId}/graph`)
-      .then((r) => r.json())
-      .then((data) => {
-        const result = {
-          questions: Array.isArray(data.questions) ? data.questions as Question[] : [],
-          cards: Array.isArray(data.cards) ? data.cards as KnowledgeCard[] : [],
-          source: data.source?.id ? data.source as Source : undefined,
-        };
-        graphDataCache.current.set(sourceId, result);
-        return result;
-      });
-  }, []);
+    refresh();
+  }, [refresh]);
 
   const prefetchSourceGraph = useCallback((source: Source) => {
     loadSourceGraphData(source.id);
@@ -136,16 +124,6 @@ export default function Home() {
     });
   }, [activeTabId, tabs, activeTab?.activeSourceId, activeTab?.id, activeTab?.sourceQuestions.length, refreshKey, loadSourceGraphData]);
 
-  useEffect(() => {
-    Promise.all([
-      fetch("/api/spaces").then((r) => r.json()),
-      fetch("/api/sources").then((r) => r.json()),
-    ]).then(([sp, srcs]) => {
-      if (Array.isArray(sp)) setSpaces(sp);
-      if (Array.isArray(srcs)) setAllSources(srcs);
-    }).catch(() => {});
-  }, [refreshKey]);
-
   const visibleSources = useMemo(
     () => (activeTab?.selectedSpaceId
       ? allSources.filter((s) => s.spaceId === activeTab.selectedSpaceId)
@@ -165,7 +143,7 @@ export default function Home() {
     setSpaces((prev) => prev.map((s) => (s.id === spaceId ? { ...s, graphLayout } : s)));
   }, []);
 
-  const handleSourceTitleChange = useCallback((sourceId: string, title: string) => {
+  const handleDesktopSourceTitleChange = useCallback((sourceId: string, title: string) => {
     const tabId = activeTabIdRef.current;
     setTabs((prev) => prev.map((t) => {
       if (t.id !== tabId) return t;
@@ -175,8 +153,8 @@ export default function Home() {
         activeSource: t.activeSource?.id === sourceId ? { ...t.activeSource, title } : t.activeSource,
       };
     }));
-    setAllSources((prev) => prev.map((s) => (s.id === sourceId ? { ...s, title } : s)));
-  }, []);
+    handleSourceTitleChange(sourceId, title);
+  }, [handleSourceTitleChange]);
 
   // Restore tabs from localStorage after mount (keeps SSR and first client paint identical).
   useEffect(() => {
@@ -344,6 +322,23 @@ export default function Home() {
     [tabs],
   );
 
+  if (mobileMounted && isMobile) {
+    return (
+      <div className="h-full overflow-hidden" style={{ background: "var(--background)" }}>
+        <MobileShell
+          spaces={spaces}
+          allSources={allSources}
+          refresh={refresh}
+          loadSourceGraphData={loadSourceGraphData}
+          fetchFullSource={fetchFullSource}
+          handleRegisterSeek={handleRegisterSeek}
+          handleSeekTo={handleSeekTo}
+          handleSourceTitleChange={handleSourceTitleChange}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="h-full flex flex-col overflow-hidden" style={{ background: "var(--background)" }}>
       <TabBar
@@ -362,8 +357,8 @@ export default function Home() {
           activeSourceId={activeTab?.activeSourceId ?? null}
           onSelectSpace={handleSelectSpace}
           onSelectSource={handleSelectSourceFromGraph}
-          onSourceAdded={refresh}
-          onSpaceAdded={refresh}
+          onSourceAdded={desktopRefresh}
+          onSpaceAdded={desktopRefresh}
         />
 
         <div className="flex-1 flex min-w-0 overflow-hidden relative">
@@ -393,7 +388,7 @@ export default function Home() {
                   onSelectNode={visible ? handleSelectNode : () => {}}
                   onSelectSpace={handleSelectSpace}
                   onSelectSource={handleSelectSourceFromGraph}
-                  onGraphRefresh={refresh}
+                  onGraphRefresh={desktopRefresh}
                   onActiveChunkIdxChange={(idx) => patchTab(tab.id, { activeChunkIdx: idx })}
                   onRegisterSeek={visible ? handleRegisterSeek : () => {}}
                   onPdfTextSelect={(text, page, rects) => {
@@ -413,7 +408,7 @@ export default function Home() {
                   viewMode={tab.viewMode}
                   onSeekTo={handleSeekTo}
                   onSelectNode={visible ? handleSelectNode : () => {}}
-                  onGraphRefresh={refresh}
+                  onGraphRefresh={desktopRefresh}
                   onActiveSourceUpdate={visible ? updateActiveSource : () => {}}
                   pdfSelection={tab.pdfSelection}
                   onClearPdfSelection={() => patchTab(tab.id, { pdfSelection: null })}
@@ -422,7 +417,7 @@ export default function Home() {
                   pendingInitialMessage={tab.pendingInitialMessage}
                   onPdfQuestionCreated={(questionId, message, passage, page) => {
                     if (!visible) return;
-                    refresh();
+                    desktopRefresh();
                     patchTab(tab.id, {
                       pdfSelection: null,
                       pendingInitialMessage: { questionId, message, passage, page },
@@ -459,11 +454,11 @@ export default function Home() {
                         });
                       });
                     } else {
-                      refresh();
+                      desktopRefresh();
                     }
                   }}
                   onClearPendingInitialMessage={() => patchTab(tab.id, { pendingInitialMessage: null })}
-                  onSourceTitleChange={visible ? handleSourceTitleChange : undefined}
+                  onSourceTitleChange={visible ? handleDesktopSourceTitleChange : undefined}
                 />
               </div>
             );
