@@ -34,6 +34,7 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
   const [messagesLoaded, setMessagesLoaded] = useState(false);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [webSearching, setWebSearching] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
   const [streamBuffer, setStreamBuffer] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
@@ -51,10 +52,14 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   }
 
+  const INIT_MARKER = "\x00INIT\x00";
+  const SEARCHING_MARKER = "\x00SEARCHING\x00";
+
   async function doSend(content: string) {
     setSendError(null);
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), questionId, role: "user", content, createdAt: new Date().toISOString() }]);
     setStreaming(true);
+    setWebSearching(false);
     setStreamBuffer("");
 
     const res = await fetch(`/api/questions/${questionId}/messages`, {
@@ -76,12 +81,20 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      full += decoder.decode(value);
+      const chunk = decoder.decode(value).replaceAll(INIT_MARKER, "");
+      if (chunk.includes(SEARCHING_MARKER)) {
+        setWebSearching(true);
+        full += chunk.replaceAll(SEARCHING_MARKER, "");
+      } else {
+        if (chunk) setWebSearching(false);
+        full += chunk;
+      }
       setStreamBuffer(full);
     }
 
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), questionId, role: "assistant", content: full, createdAt: new Date().toISOString() }]);
     setStreamBuffer("");
+    setWebSearching(false);
     setStreaming(false);
 
     // Re-fetch the question to pick up the AI-generated title, and refresh the graph node.
@@ -93,15 +106,25 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
 
   useEffect(() => {
     fetch(`/api/questions/${questionId}`).then((r) => r.json()).then(setQuestion).catch(() => {});
-    fetch(`/api/questions/${questionId}/messages`).then((r) => r.json()).then((msgs: Message[]) => {
-      setMessages(msgs);
+
+    if (initialMessage && !initialSent.current) {
+      // New thread — no prior messages. Start streaming immediately without waiting for the
+      // messages fetch, so the "Thinking…" indicator appears on the very first render.
+      initialSent.current = true;
+      onPendingMessageSent?.();
       setMessagesLoaded(true);
-      if (msgs.length === 0 && initialMessage && !initialSent.current) {
-        initialSent.current = true;
-        onPendingMessageSent?.();
-        doSend(initialMessage);
-      }
-    });
+      doSend(initialMessage);
+    } else {
+      fetch(`/api/questions/${questionId}/messages`).then((r) => r.json()).then((msgs: Message[]) => {
+        setMessages(msgs);
+        setMessagesLoaded(true);
+        if (msgs.length === 0 && initialMessage && !initialSent.current) {
+          initialSent.current = true;
+          onPendingMessageSent?.();
+          doSend(initialMessage);
+        }
+      });
+    }
   }, [questionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -183,22 +206,31 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
               className="type-serif font-semibold text-sm leading-snug w-full rounded px-1 -mx-1 outline-none"
               style={{ color: "var(--foreground)", background: "var(--active-row)", border: "1px solid var(--accent)" }}
             />
-          ) : (
-            <h2
-              onClick={startEditTitle}
-              title="Click to rename"
-              className="type-serif font-semibold text-sm leading-snug cursor-text group/title relative"
-              style={{ color: "var(--foreground)" }}
-            >
-              {question?.title ?? initialMessage ?? ""}
-              <span
-                className="opacity-0 group-hover/title:opacity-100 transition-opacity ml-1.5 type-mono"
-                style={{ fontSize: "0.6rem", color: "var(--muted)", verticalAlign: "middle" }}
+          ) : (() => {
+            // Show "Generating title…" while the background LLM task hasn't replaced the
+            // user's raw question with a short representative title yet.
+            const titlePending = !!initialMessage && (!question || question.title === initialMessage);
+            return titlePending ? (
+              <p className="type-mono text-xs animate-pulse" style={{ color: "var(--muted)", letterSpacing: "0.04em" }}>
+                Generating title…
+              </p>
+            ) : (
+              <h2
+                onClick={startEditTitle}
+                title="Click to rename"
+                className="type-serif font-semibold text-sm leading-snug cursor-text group/title relative"
+                style={{ color: "var(--foreground)" }}
               >
-                edit
-              </span>
-            </h2>
-          )}
+                {question?.title ?? initialMessage ?? ""}
+                <span
+                  className="opacity-0 group-hover/title:opacity-100 transition-opacity ml-1.5 type-mono"
+                  style={{ fontSize: "0.6rem", color: "var(--muted)", verticalAlign: "middle" }}
+                >
+                  edit
+                </span>
+              </h2>
+            );
+          })()}
         </div>
         <button
           onClick={summarize}
@@ -269,10 +301,17 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
             <div className="prose-answer text-sm" style={{ color: "var(--foreground)" }}>
               {streamBuffer ? (
                 <ChatMarkdown content={streamBuffer} />
+              ) : webSearching ? (
+                <span className="flex items-center gap-1.5" style={{ color: "var(--muted)" }}>
+                  <svg className="animate-spin" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                  </svg>
+                  Searching the web…
+                </span>
               ) : (
                 <span style={{ color: "var(--muted)" }}>Thinking…</span>
               )}
-              <span className="animate-pulse ml-0.5" style={{ color: "var(--accent)" }}>▊</span>
+              {!webSearching && <span className="animate-pulse ml-0.5" style={{ color: "var(--accent)" }}>▊</span>}
             </div>
           </div>
         )}

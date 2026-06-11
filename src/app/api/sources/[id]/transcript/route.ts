@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { sources } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { extractVideoId, fetchTranscript } from "@/lib/youtube";
+import { withRetry } from "@/lib/retry";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -15,7 +16,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     const videoId = extractVideoId(row.youtubeUrl);
     if (videoId) {
       try {
-        const transcript = await fetchTranscript(videoId);
+        const transcript = await withRetry(() => fetchTranscript(videoId), { attempts: 3, baseMs: 1500 });
         await db.update(sources).set({ transcript }).where(eq(sources.id, id));
         return NextResponse.json({ transcript });
       } catch {
