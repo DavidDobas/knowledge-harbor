@@ -78,6 +78,13 @@ body {
 .type-mono {
   font-family: var(--font-mono), "Courier New", monospace;
 }
+/* Small uppercase monospace label (section headers like "You", "Thread", "Note"). */
+.mono-label {
+  font-family: var(--font-mono), "Courier New", monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
 
 /* ── Transcript rows ── */
 .transcript-row {

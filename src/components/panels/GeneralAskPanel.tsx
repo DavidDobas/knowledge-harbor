@@ -3,6 +3,7 @@
 import { useState } from "react";
 import WebSearchToggle from "@/components/source/WebSearchToggle";
 import ChatInput from "@/components/ui/ChatInput";
+import { createQuestion } from "@/lib/questions";
 import type { Source } from "@/lib/types";
 
 interface Props {
@@ -28,27 +29,20 @@ export default function GeneralAskPanel({ source, onQuestionCreated, onDismiss }
     if (!text || creating) return;
     setCreating(true);
     setError(null);
-    try {
-      const res = await fetch("/api/questions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sourceId: source.id,
-          title: text,
-          origin: "general",
-          includeFile: source.type === "pdf",
-          includeWeb,
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const question = await res.json();
-      onQuestionCreated(question.id, text);
-      setMessage("");
-    } catch {
+    const question = await createQuestion({
+      sourceId: source.id,
+      title: text,
+      origin: "general",
+      includeFile: source.type === "pdf",
+      includeWeb,
+    });
+    setCreating(false);
+    if (!question) {
       setError("Could not start thread — try again.");
-    } finally {
-      setCreating(false);
+      return;
     }
+    onQuestionCreated(question.id, text);
+    setMessage("");
   }
 
   return (

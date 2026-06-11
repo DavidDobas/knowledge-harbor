@@ -5,9 +5,12 @@ import { parseTranscript, type TranscriptSegment } from "@/lib/youtube";
 import { formatTime } from "@/lib/utils";
 import WebSearchToggle from "@/components/source/WebSearchToggle";
 import ChatInput, { type ChatInputHandle } from "@/components/ui/ChatInput";
+import PassageQuote from "@/components/ui/PassageQuote";
 import SummaryView from "@/components/source/SummaryView";
 import NotesView, { type NotesViewHandle } from "@/components/source/NotesView";
 import { useSourceNotes } from "@/hooks/useSourceNotes";
+import { fetchJson } from "@/lib/fetchJson";
+import { createQuestion } from "@/lib/questions";
 
 type Tab = "transcript" | "summary" | "notes";
 type View = "transcript" | "chat";
@@ -122,11 +125,8 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   const [creating, setCreating] = useState(false);
   const [newThreadIncludeWeb, setNewThreadIncludeWeb] = useState(false);
 
-  // Notes state
-  const { notes, loaded: notesLoaded, setNotes } = useSourceNotes(sourceId);
-  const [notesSaving, setNotesSaving] = useState(false);
-  const [notesSaveError, setNotesSaveError] = useState<string | null>(null);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Notes — load + debounced autosave handled by the hook.
+  const { notes, loaded: notesLoaded, setNotes, saving: notesSaving, saveError: notesSaveError } = useSourceNotes(sourceId);
   const notesEditorRef = useRef<NotesViewHandle | null>(null);
 
   const chunkRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -138,9 +138,9 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
 
   // Load persisted questions
   useEffect(() => {
-    fetch(`/api/questions?sourceId=${sourceId}`)
-      .then((r) => r.json())
-      .then((qs: Array<{ id: string; chunkOffset: number | null }>) => {
+    fetchJson<Array<{ id: string; chunkOffset: number | null }>>(`/api/questions?sourceId=${sourceId}`)
+      .then((qs) => {
+        if (!qs) return;
         const map: Record<number, string> = {};
         qs.forEach((q) => {
           if (q.chunkOffset == null) return;
@@ -148,39 +148,8 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
           if (ci >= 0) map[ci] = q.id;
         });
         setChunkQuestions(map);
-      })
-      .catch(() => {});
+      });
   }, [sourceId, chunks]);
-
-  function handleNotesChange(value: string) {
-    setNotes(value);
-    setNotesSaveError(null);
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    setNotesSaving(true);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/sources/${sourceId}/notes`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ notes: value }),
-        });
-        if (!res.ok) {
-          const sizeKB = Math.round(new Blob([value]).size / 1024);
-          if (res.status === 413) {
-            setNotesSaveError(`Notes too large (${sizeKB} KB). Remove some images to save.`);
-          } else {
-            setNotesSaveError(`Save failed (HTTP ${res.status}).`);
-          }
-          console.error("[notes] save failed", res.status, await res.text().catch(() => ""));
-        }
-      } catch (err) {
-        setNotesSaveError("Save failed — check connection.");
-        console.error("[notes] save error", err);
-      } finally {
-        setNotesSaving(false);
-      }
-    }, 1200);
-  }
 
   function handleCite(ci: number) {
     notesEditorRef.current?.insertCitation(chunks[ci].offset);
@@ -307,19 +276,20 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
 
   async function submitQuestion() {
     if (!questionInput.trim() || activeQuestionChunkIdx === null || creating) return;
+    const chunkIdx = activeQuestionChunkIdx;
     setCreating(true);
     const initialMsg = questionInput;
-    const context = buildContext(segments, chunks, activeQuestionChunkIdx);
-    const chunkOffset = chunks[activeQuestionChunkIdx].offset;
-    const res = await fetch("/api/questions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sourceId, title: questionInput, context, chunkOffset, includeWeb: newThreadIncludeWeb }),
+    const question = await createQuestion({
+      sourceId,
+      title: questionInput,
+      context: buildContext(segments, chunks, chunkIdx),
+      chunkOffset: chunks[chunkIdx].offset,
+      includeWeb: newThreadIncludeWeb,
     });
-    const question = await res.json();
-    setChunkQuestions((prev) => ({ ...prev, [activeQuestionChunkIdx]: question.id }));
-    setQuestionInput("");
     setCreating(false);
+    if (!question) return;
+    setChunkQuestions((prev) => ({ ...prev, [chunkIdx]: question.id }));
+    setQuestionInput("");
     // Reset compose view so a later "Back" lands on the transcript, not a stale compose box.
     setView("transcript");
     setActiveQuestionChunkIdx(null);
@@ -468,7 +438,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
             <NotesView
               ref={notesEditorRef}
               content={notes}
-              onChange={handleNotesChange}
+              onChange={setNotes}
               saving={notesSaving}
               saveError={notesSaveError}
               onSeekTo={onSeekTo}
@@ -615,17 +585,11 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
 
           {/* Chunk quote — the passage being asked about */}
           {chatChunk && (
-            <div
+            <PassageQuote
+              text={chatChunk.text}
+              label={formatTime(chatChunk.offset)}
               className="shrink-0 mx-5 my-3"
-              style={{ borderLeft: "2px solid var(--border)", paddingLeft: "0.875rem" }}
-            >
-              <div className="type-mono mb-1" style={{ fontSize: "0.65rem", letterSpacing: "0.03em", color: "var(--accent)" }}>
-                {formatTime(chatChunk.offset)}
-              </div>
-              <p className="text-sm leading-relaxed line-clamp-3" style={{ color: "var(--text-secondary)" }}>
-                {chatChunk.text}
-              </p>
-            </div>
+            />
           )}
 
           <div className="flex flex-col flex-1 min-h-0 overflow-hidden">

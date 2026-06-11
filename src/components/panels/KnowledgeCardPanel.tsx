@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import type { KnowledgeCard, SelectedNode } from "@/lib/types";
+import { fetchJson } from "@/lib/fetchJson";
+import Loading from "@/components/ui/Loading";
 
 interface Props {
   cardId: string;
@@ -12,10 +14,10 @@ export default function KnowledgeCardPanel({ cardId, onSelectNode }: Props) {
   const [card, setCard] = useState<KnowledgeCard | null>(null);
 
   useEffect(() => {
-    fetch(`/api/knowledge-cards/${cardId}`).then((r) => r.json()).then(setCard);
+    fetchJson<KnowledgeCard>(`/api/knowledge-cards/${cardId}`).then(setCard);
   }, [cardId]);
 
-  if (!card) return <div className="p-4 text-xs" style={{ color: "var(--muted)" }}>Loading…</div>;
+  if (!card) return <Loading />;
 
   return (
     <div className="flex flex-col gap-4 p-4">
