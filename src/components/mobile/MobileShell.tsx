@@ -8,6 +8,7 @@ import MobileNoteSource from "./MobileNoteSource";
 import MobileThreadScreen from "./MobileThreadScreen";
 import { groupIntoChunks } from "@/lib/transcriptChunks";
 import { parseTranscript } from "@/lib/youtube";
+import MobilePdfSource from "./MobilePdfSource";
 
 type Screen = "library" | "source" | "thread";
 
@@ -143,6 +144,7 @@ export default function MobileShell({
       return (
         <MobileNoteSource
           source={activeSource}
+          questions={sourceQuestions}
           onBack={() => { setScreen("library"); setActiveSource(null); }}
           onTitleChange={(title) => {
             handleSourceTitleChange(activeSource.id, title);
@@ -153,18 +155,18 @@ export default function MobileShell({
             const src = allSources.find((s) => s.id === id);
             if (src) await openSource(src);
           }}
+          onQuestionsRefresh={refreshQuestions}
         />
       );
     }
     return (
-      <div className="flex flex-col h-full items-center justify-center px-6 gap-4">
-        <p className="text-sm text-center" style={{ color: "var(--muted)" }}>
-          PDF sources are available on desktop only.
-        </p>
-        <button onClick={() => setScreen("library")} className="type-mono text-xs" style={{ color: "var(--accent)" }}>
-          ← Back to library
-        </button>
-      </div>
+      <MobilePdfSource
+        source={activeSource as Source & { pdfUrl?: string | null }}
+        questions={sourceQuestions}
+        onBack={() => { setScreen("library"); setActiveSource(null); }}
+        onOpenThread={openThread}
+        onQuestionsRefresh={refreshQuestions}
+      />
     );
   }
 

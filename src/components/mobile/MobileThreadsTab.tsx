@@ -17,9 +17,10 @@ function truncatePreview(text: string, max = 160): string {
 interface Props {
   questions: Question[];
   onOpenThread: (questionId: string) => void;
+  onNewThread?: () => void;
 }
 
-export default function MobileThreadsTab({ questions, onOpenThread }: Props) {
+export default function MobileThreadsTab({ questions, onOpenThread, onNewThread }: Props) {
   const [previews, setPreviews] = useState<Record<string, string>>({});
 
   const sorted = [...questions].sort((a, b) => {
@@ -46,17 +47,38 @@ export default function MobileThreadsTab({ questions, onOpenThread }: Props) {
     });
   }, [questionIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const header = onNewThread ? (
+    <div className="shrink-0 px-4 pt-3 pb-1 flex justify-end">
+      <button
+        type="button"
+        onClick={onNewThread}
+        className="mobile-touch-target flex items-center gap-1.5 px-3 py-1.5 rounded-lg type-mono text-xs"
+        style={{ background: "var(--foreground)", color: "var(--background)", letterSpacing: "0.04em" }}
+      >
+        <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+        New thread
+      </button>
+    </div>
+  ) : null;
+
   if (sorted.length === 0) {
     return (
-      <div className="flex-1 min-h-0 overflow-y-auto">
-        <p className="px-5 py-8 text-sm text-center" style={{ color: "var(--muted)" }}>
-          No threads yet. Ask a question from the transcript.
-        </p>
+      <div className="flex-1 flex flex-col min-h-0">
+        {header}
+        <div className="flex-1 flex items-center justify-center">
+          <p className="px-5 text-sm text-center" style={{ color: "var(--muted)" }}>
+            No threads yet.
+          </p>
+        </div>
       </div>
     );
   }
 
   return (
+    <div className="flex-1 flex flex-col min-h-0">
+      {header}
     <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
       <ul className="flex flex-col gap-3 list-none m-0 p-0">
         {sorted.map((q) => (
@@ -93,6 +115,7 @@ export default function MobileThreadsTab({ questions, onOpenThread }: Props) {
           </li>
         ))}
       </ul>
+    </div>
     </div>
   );
 }

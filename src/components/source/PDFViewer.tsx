@@ -34,6 +34,8 @@ interface Props {
   pdfUrl: string;
   highlights: PdfHighlight[];
   targetPage?: number | null;
+  /** Override the persisted zoom on first render (e.g. pass window.innerWidth for mobile fit-to-width). */
+  initialPageWidth?: number;
   // text + anchor page + rects on that anchor page (selection toolbar's "Ask")
   onTextSelect: (text: string, page: number, rects: PdfRect[]) => void;
   onClearSelection: () => void;
@@ -405,12 +407,16 @@ function CommentCard({
 }
 
 export default function PDFViewer({
-  pdfUrl, highlights, targetPage,
+  pdfUrl, highlights, targetPage, initialPageWidth,
   onTextSelect, onClearSelection, onHighlightClick, onHighlight, onDeleteHighlight, onEditComment,
 }: Props) {
   const [numPages, setNumPages] = useState<number>(0);
   const [selBox, setSelBox] = useState<SelectionBox | null>(null);
-  const [pageWidth, setPageWidth] = useState<number>(readPersistedPageWidth);
+  const [pageWidth, setPageWidth] = useState<number>(() =>
+    initialPageWidth != null
+      ? Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, initialPageWidth))
+      : readPersistedPageWidth()
+  );
   const [pendingComment, setPendingComment] = useState<PendingComment | null>(null);
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const wheelFactorRef = useRef(1);

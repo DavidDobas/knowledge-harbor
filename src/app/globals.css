@@ -342,6 +342,14 @@ body {
 .mobile-safe-top {
   padding-top: env(safe-area-inset-top, 0px);
 }
+/* Inner content row inside a .mobile-safe-top header — gets equal vertical padding
+   so items are visually centred beneath the (variable) safe-area gap. */
+.mobile-header-row {
+  display: flex;
+  align-items: center;
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+}
 .mobile-safe-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
@@ -371,35 +379,13 @@ body {
   overflow: visible;
 }
 .mobile-content-sheet {
-  margin-top: -1.75rem;
-  padding-top: 0.75rem;
-  border-radius: 1.5rem 1.5rem 0 0;
   background: var(--background);
-  box-shadow: 0 -8px 32px rgba(26, 25, 23, 0.14);
   overflow: hidden;
   isolation: isolate;
+  padding-top: 0rem;
+  margin-bottom: 0rem;
 }
-.mobile-content-sheet .mobile-tab-bar {
-  padding-top: 0.5rem;
-  margin-bottom: 0.25rem;
-}
-.mobile-video-overlay-btn {
-  position: absolute;
-  left: 0.875rem;
-  top: max(0.625rem, env(safe-area-inset-top, 0px));
-  z-index: 20;
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.48);
-  color: #fff;
-  border: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  backdrop-filter: blur(8px);
-  cursor: pointer;
-}
+
 .mobile-transcript-row {
   cursor: pointer;
   transition: background 120ms ease;

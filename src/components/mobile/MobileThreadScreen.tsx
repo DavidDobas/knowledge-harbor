@@ -49,21 +49,23 @@ export default function MobileThreadScreen({ question, passageText, onBack, onSu
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
-      <header className="mobile-safe-top shrink-0 flex items-center gap-3 px-4 py-3 border-b" style={{ borderColor: "var(--border)" }}>
-        <button onClick={onBack} className="mobile-touch-target type-mono text-xs" style={{ color: "var(--accent)" }}>
-          ← Back
-        </button>
-        <h1 className="type-serif font-semibold text-sm flex-1 truncate" style={{ color: "var(--foreground)" }}>
-          {question.title}
-        </h1>
-        <button
-          onClick={summarize}
-          disabled={summarizing || messages.length === 0}
-          className="type-mono text-xs px-2 py-1 rounded disabled:opacity-40"
-          style={{ color: "#5A7A56", background: "#F0F5EF", border: "1px solid #C8DCC5" }}
-        >
-          {summarizing ? "…" : "✦"}
-        </button>
+      <header className="mobile-safe-top shrink-0 border-b px-4" style={{ borderColor: "var(--border)" }}>
+        <div className="mobile-header-row gap-3">
+          <button onClick={onBack} className="mobile-touch-target type-mono text-xs shrink-0" style={{ color: "var(--accent)" }}>
+            ← Back
+          </button>
+          <h1 className="type-serif font-semibold text-sm flex-1 truncate" style={{ color: "var(--foreground)" }}>
+            {question.title}
+          </h1>
+          <button
+            onClick={summarize}
+            disabled={summarizing || messages.length === 0}
+            className="type-mono text-xs px-2 py-1 rounded disabled:opacity-40"
+            style={{ color: "#5A7A56", background: "#F0F5EF", border: "1px solid #C8DCC5" }}
+          >
+            {summarizing ? "…" : "✦"}
+          </button>
+        </div>
       </header>
 
       {passageText && (

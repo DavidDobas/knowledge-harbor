@@ -17,17 +17,19 @@ export default function MobileLibrary({ spaces, sources, onSelectSource, onRefre
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
-      <header className="mobile-safe-top shrink-0 flex items-center justify-between px-4 py-4 border-b" style={{ borderColor: "var(--border)" }}>
-        <h1 className="type-serif font-semibold text-lg" style={{ color: "var(--foreground)" }}>
-          Knowledge Harbor
-        </h1>
-        <button
-          onClick={() => setShowAdd(true)}
-          className="mobile-touch-target w-10 h-10 rounded-full flex items-center justify-center type-mono text-lg"
-          style={{ background: "var(--foreground)", color: "var(--background)" }}
-        >
-          +
-        </button>
+      <header className="mobile-safe-top shrink-0 border-b px-4" style={{ borderColor: "var(--border)" }}>
+        <div className="mobile-header-row justify-between">
+          <h1 className="type-serif font-semibold text-lg" style={{ color: "var(--foreground)" }}>
+            Knowledge Harbor
+          </h1>
+          <button
+            onClick={() => setShowAdd(true)}
+            className="mobile-touch-target w-10 h-10 rounded-full flex items-center justify-center type-mono text-lg"
+            style={{ background: "var(--foreground)", color: "var(--background)" }}
+          >
+            +
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 py-4">

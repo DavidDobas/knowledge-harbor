@@ -8,11 +8,13 @@ import { groupIntoChunks, buildContext } from "@/lib/transcriptChunks";
 import { useChunkQuestions } from "@/hooks/useSourceQuestions";
 import type { NotesViewHandle } from "@/components/source/NotesView";
 import type { Question, Source } from "@/lib/types";
+import MobileSourceHeader from "./MobileSourceHeader";
 import MobileTabBar from "./MobileTabBar";
 import MobileTranscriptTab from "./MobileTranscriptTab";
 import MobileNotesTab from "./MobileNotesTab";
 import MobileThreadsTab from "./MobileThreadsTab";
 import MobileAskSheet from "./MobileAskSheet";
+import MobileGeneralAskSheet from "./MobileGeneralAskSheet";
 
 const YouTubePlayer = dynamic(() => import("@/components/source/YouTubePlayer"), { ssr: false });
 
@@ -45,6 +47,7 @@ export default function MobileYouTubeSource({
 }: Props) {
   const [tab, setTab] = useState<Tab>("transcript");
   const [askChunkIdx, setAskChunkIdx] = useState<number | null>(null);
+  const [showGeneralAsk, setShowGeneralAsk] = useState(false);
   const notesEditorRef = useRef<NotesViewHandle | null>(null);
 
   const videoId = source.youtubeUrl ? extractVideoId(source.youtubeUrl) : null;
@@ -91,6 +94,8 @@ export default function MobileYouTubeSource({
 
   return (
     <div className="mobile-youtube-layout flex flex-col h-full min-h-0" style={{ background: "var(--background)" }}>
+      <MobileSourceHeader onBack={onBack} />
+
       <div className="mobile-video-stage relative shrink-0 z-0">
         <div className="w-full aspect-video bg-black">
           {videoId && (
@@ -103,16 +108,6 @@ export default function MobileYouTubeSource({
             />
           )}
         </div>
-        <button
-          type="button"
-          onClick={onBack}
-          className="mobile-video-overlay-btn"
-          aria-label="Back to library"
-        >
-          <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-            <path d="M15 18l-6-6 6-6" />
-          </svg>
-        </button>
       </div>
 
       <div className="mobile-content-sheet flex-1 flex flex-col min-h-0 z-10">
@@ -147,10 +142,27 @@ export default function MobileYouTubeSource({
           />
         )}
         {tab === "threads" && (
-          <MobileThreadsTab questions={questions} onOpenThread={onOpenThread} />
+          <MobileThreadsTab
+            questions={questions}
+            onOpenThread={onOpenThread}
+            onNewThread={() => setShowGeneralAsk(true)}
+          />
         )}
         </div>
       </div>
+
+      {showGeneralAsk && (
+        <MobileGeneralAskSheet
+          sourceId={source.id}
+          sourceType="youtube"
+          onClose={() => setShowGeneralAsk(false)}
+          onThreadCreated={(qid) => {
+            setShowGeneralAsk(false);
+            onQuestionsRefresh();
+            onOpenThread(qid);
+          }}
+        />
+      )}
 
       {askChunk && askChunkIdx !== null && (
         <MobileAskSheet
