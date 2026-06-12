@@ -57,24 +57,48 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // and to keep prompt-cache hit rate high when the user just wants to read the PDF.
   const tools = question?.includeWeb ? [{ type: "web_search" as const }] : undefined;
 
-  const stream = await openai.responses.create({
-    model: CHAT_MODEL,
-    stream: true,
-    instructions,
-    input,
-    tools,
-    prompt_cache_key: `q:${id}`,
-    prompt_cache_retention: "24h",
-  });
-
   const encoder = new TextEncoder();
-  let fullContent = "";
-  const urlCitations: { url: string; title: string }[] = [];
+  // INIT_MARKER: sent immediately when the stream opens, before the OpenAI call starts.
+  // This wakes up the HTTP connection so the browser receives bytes right away, giving
+  // React time to render the "Thinking…" state before the first real token arrives.
+  const INIT_MARKER = "\x00INIT\x00";
+  // SEARCHING_MARKER: sent when a web_search tool call begins so the client can show
+  // a "Searching the web…" indicator during the silent tool-call phase.
+  const SEARCHING_MARKER = "\x00SEARCHING\x00";
 
   const readable = new ReadableStream({
     async start(controller) {
+      // Wake up the connection immediately — do NOT await anything before this.
+      controller.enqueue(encoder.encode(INIT_MARKER));
+
+      const stream = await openai.responses.create({
+        model: CHAT_MODEL,
+        stream: true,
+        instructions,
+        input,
+        tools,
+        prompt_cache_key: `q:${id}`,
+        prompt_cache_retention: "24h",
+      });
+
+      let fullContent = "";
+      let searchingEmitted = false;
+      const urlCitations: { url: string; title: string }[] = [];
+
       for await (const event of stream) {
-        if (event.type === "response.output_text.delta" && event.delta) {
+        // Detect the start of a web_search tool call. The exact event name can vary across
+        // SDK versions so we check a few candidates.
+        if (
+          !searchingEmitted &&
+          (event.type === "response.web_search_call.in_progress" ||
+            event.type === "response.web_search_call.searching" ||
+            (event.type === "response.output_item.added" &&
+              (event.item as { type?: string } | undefined)?.type === "web_search_call") ||
+            event.type.includes("web_search_call"))
+        ) {
+          searchingEmitted = true;
+          controller.enqueue(encoder.encode(SEARCHING_MARKER));
+        } else if (event.type === "response.output_text.delta" && event.delta) {
           fullContent += event.delta;
           controller.enqueue(encoder.encode(event.delta));
         } else if (event.type === "response.output_text.annotation.added") {
@@ -102,6 +126,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   });
 
   return new Response(readable, {
-    headers: { "Content-Type": "text/plain; charset=utf-8", "Transfer-Encoding": "chunked" },
+    // Disable all intermediate buffering so each token reaches the browser immediately.
+    // Transfer-Encoding: chunked is HTTP/1.1-only and stripped by HTTP/2, so we rely on
+    // X-Accel-Buffering and Cache-Control to prevent nginx / Vercel edge from batching chunks.
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "X-Accel-Buffering": "no",
+      "Cache-Control": "no-cache, no-transform",
+    },
   });
 }

@@ -4,6 +4,7 @@ import { sources } from "@/lib/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { uploadToS3, getPresignedUrl } from "@/lib/s3";
 import { extractVideoId, fetchTranscript } from "@/lib/youtube";
+import { withRetry } from "@/lib/retry";
 
 export async function GET(req: NextRequest) {
   const spaceId = req.nextUrl.searchParams.get("spaceId");
@@ -69,9 +70,9 @@ export async function POST(req: NextRequest) {
 
   let transcript: string | null = null;
   try {
-    transcript = await fetchTranscript(videoId);
+    transcript = await withRetry(() => fetchTranscript(videoId), { attempts: 3, baseMs: 1500 });
   } catch {
-    // transcript fetch is best-effort
+    // transcript fetch is best-effort — the client can retry via /api/sources/[id]/transcript
   }
 
   const [row] = await db.insert(sources).values({ type: "youtube", title, youtubeUrl, transcript, spaceId: spaceId || null }).returning();

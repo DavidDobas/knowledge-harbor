@@ -8,8 +8,7 @@ import NotePanel from "@/components/panels/NotePanel";
 import TranscriptWithChat from "@/components/source/TranscriptWithChat";
 import PdfRightPanel from "@/components/source/PdfRightPanel";
 import GeneralAskPanel from "@/components/panels/GeneralAskPanel";
-import type { Source, SelectedNode, Question } from "@/lib/types";
-import { isGeneralQuestion } from "@/lib/types";
+import type { Source, SelectedNode } from "@/lib/types";
 import {
   RIGHT_PANEL_DEFAULT_WIDTH,
   RIGHT_PANEL_MIN_WIDTH,
@@ -20,7 +19,6 @@ import {
 
 interface Props {
   activeSource: Source | null;
-  sourceQuestions: Question[];
   selectedNode: SelectedNode | null;
   activeChunkIdx: number;
   viewMode: "graph" | "viewer";
@@ -35,16 +33,17 @@ interface Props {
   pendingInitialMessage: { questionId: string; message: string; passage?: string; page?: number } | null;
   onPdfQuestionCreated: (questionId: string, message: string, passage: string, page: number) => void;
   onGeneralQuestionCreated: (questionId: string, message: string) => void;
+  onTranscriptQuestionCreated?: (questionId: string, message: string) => void;
   onClearPendingInitialMessage?: () => void;
   onSourceTitleChange?: (sourceId: string, title: string) => void;
 }
 
 export default function RightPanel({
-  activeSource, sourceQuestions, selectedNode, activeChunkIdx, viewMode, onSeekTo,
+  activeSource, selectedNode, activeChunkIdx, viewMode, onSeekTo,
   onSelectNode, onGraphRefresh, onActiveSourceUpdate,
   pdfSelection, onClearPdfSelection, onOpenThread, onOpenSource,
-  pendingInitialMessage, onPdfQuestionCreated, onGeneralQuestionCreated, onClearPendingInitialMessage,
-  onSourceTitleChange,
+  pendingInitialMessage, onPdfQuestionCreated, onGeneralQuestionCreated, onTranscriptQuestionCreated,
+  onClearPendingInitialMessage, onSourceTitleChange,
 }: Props) {
   const isYoutube = activeSource?.type === "youtube";
   const isPdf = activeSource?.type === "pdf";
@@ -118,23 +117,15 @@ export default function RightPanel({
     </div>
   );
 
-  const selectedQuestion =
-    selectedNode?.type === "question"
-      ? sourceQuestions.find((q) => q.id === selectedNode.id)
-      : null;
-
   const pendingForThread =
     selectedNode?.type === "question" &&
     pendingInitialMessage?.questionId === selectedNode.id
       ? pendingInitialMessage
       : null;
 
-  const useQuestionPanel =
-    selectedNode?.type === "question" &&
-    activeSource &&
-    (!isYoutube ||
-      pendingForThread != null ||
-      (selectedQuestion != null && isGeneralQuestion(selectedQuestion)));
+  // All question threads — passage or general, YouTube/PDF/note — live in QuestionPanel.
+  // (TranscriptWithChat only composes new questions, then navigates here.)
+  const useQuestionPanel = selectedNode?.type === "question" && !!activeSource;
 
   function renderContent() {
     // Knowledge card — same panel regardless of source type.
@@ -193,8 +184,7 @@ export default function RightPanel({
           onOpenThread={onOpenThread}
           onTranscriptUpdated={(transcript) => onActiveSourceUpdate({ transcript })}
           onOpenSource={onOpenSource}
-          externalQuestionId={selectedNode?.type === "question" ? selectedNode.id : null}
-          onCloseThread={() => onSelectNode(null)}
+          onTranscriptQuestionCreated={onTranscriptQuestionCreated}
         />
       );
     }

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Space } from "@/lib/types";
 import { renderFirstPageThumbnail } from "@/lib/pdfThumbnail";
+import { fetchJson } from "@/lib/fetchJson";
 
 interface Props {
   spaceId: string | null;
@@ -29,7 +30,7 @@ export default function AddSourceModal({ spaceId, onClose, onAdded, mobileOnly =
   const [newSpaceName, setNewSpaceName] = useState("");
 
   useEffect(() => {
-    fetch("/api/spaces").then((r) => r.json()).then(setSpaces);
+    fetchJson<Space[]>("/api/spaces").then((s) => s && setSpaces(s));
   }, []);
 
   async function createSpace(): Promise<string | null> {

@@ -4,13 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseTranscript } from "@/lib/youtube";
 import { formatTime } from "@/lib/utils";
 import { groupIntoChunks, buildContext } from "@/lib/transcriptChunks";
-import ChatMarkdown from "@/components/source/ChatMarkdown";
 import WebSearchToggle from "@/components/source/WebSearchToggle";
+import ChatInput, { type ChatInputHandle } from "@/components/ui/ChatInput";
+import PassageQuote from "@/components/ui/PassageQuote";
 import SummaryView from "@/components/source/SummaryView";
 import NotesView, { type NotesViewHandle } from "@/components/source/NotesView";
 import { useSourceNotes } from "@/hooks/useSourceNotes";
 import { useChunkQuestions } from "@/hooks/useSourceQuestions";
-import { useThreadChat } from "@/hooks/useThreadChat";
+import { createQuestion } from "@/lib/questions";
 
 type Tab = "transcript" | "summary" | "notes";
 type View = "transcript" | "chat";
@@ -50,13 +51,11 @@ interface Props {
   // `activeSource.transcript` — keeps the YouTube player (CenterPane) and chat context in sync.
   onTranscriptUpdated?: (transcript: string) => void;
   initialSummary?: string | null;
-  // When a question node is selected in the graph, open that thread in the chat view
-  // (so it shows the same transcript-chunk view it was created with).
-  externalQuestionId?: string | null;
-  onCloseThread?: () => void;
+  // Called when a NEW transcript question is just created — parent navigates to QuestionPanel.
+  onTranscriptQuestionCreated?: (questionId: string, message: string) => void;
 }
 
-export default function TranscriptWithChat({ sourceId, rawTranscript, activeChunkIdx, onSeekTo, onGraphRefresh, viewMode, onOpenThread, onOpenSource, onTranscriptUpdated, initialSummary, externalQuestionId, onCloseThread }: Props) {
+export default function TranscriptWithChat({ sourceId, rawTranscript, activeChunkIdx, onSeekTo, onGraphRefresh, viewMode, onOpenThread, onOpenSource, onTranscriptUpdated, initialSummary, onTranscriptQuestionCreated }: Props) {
   // Notes is the default tab. We intentionally do NOT auto-switch to Transcript when the
   // video viewer opens — the user prefers to stay on Notes while watching/playing.
   // Initial value still respects viewMode so a fresh mount in viewer mode starts on Transcript.
@@ -70,98 +69,28 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   const [threadsOnly, setThreadsOnly] = useState(false);
   const [transcriptRetrying, setTranscriptRetrying] = useState(false);
   const [transcriptRetryError, setTranscriptRetryError] = useState<string | null>(null);
+  const autoPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoPollAttemptsRef = useRef(0);
 
-  // Chat state
+  // Compose state — for starting a new question about a transcript passage. Once created,
+  // we navigate to QuestionPanel (the single home for all threads), so no message/stream
+  // state lives here anymore.
   const [activeQuestionChunkIdx, setActiveQuestionChunkIdx] = useState<number | null>(null);
-  const [activeQuestionId, setActiveQuestionId] = useState<string | null>(null);
   const [questionInput, setQuestionInput] = useState("");
   const [creating, setCreating] = useState(false);
-  const [followupInput, setFollowupInput] = useState("");
-  const [summarizing, setSummarizing] = useState(false);
   const [newThreadIncludeWeb, setNewThreadIncludeWeb] = useState(false);
 
-  // Notes state
-  const { notes, loaded: notesLoaded, setNotes } = useSourceNotes(sourceId);
-  const [notesSaving, setNotesSaving] = useState(false);
-  const [notesSaveError, setNotesSaveError] = useState<string | null>(null);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Notes — load + debounced autosave handled by the hook.
+  const { notes, loaded: notesLoaded, setNotes, saving: notesSaving, saveError: notesSaveError } = useSourceNotes(sourceId);
   const notesEditorRef = useRef<NotesViewHandle | null>(null);
 
   const chunkRefs = useRef<(HTMLDivElement | null)[]>([]);
   const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const chatScrollRef = useRef<HTMLDivElement>(null);
-  const chatPinnedRef = useRef(true); // whether the chat is stuck to the bottom
-
-  function handleChatScroll() {
-    const el = chatScrollRef.current;
-    if (!el) return;
-    chatPinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  }
+  const inputRef = useRef<ChatInputHandle>(null);
 
   const segments = useMemo(() => (rawTranscript ? parseTranscript(rawTranscript) : []), [rawTranscript]);
   const chunks = useMemo(() => groupIntoChunks(segments), [segments]);
   const { chunkQuestions, setChunkQuestions } = useChunkQuestions(sourceId, chunks);
-
-  const threadQuestionId = externalQuestionId ?? activeQuestionId;
-  const {
-    messages,
-    includeWeb: threadIncludeWeb,
-    streaming,
-    streamBuffer,
-    streamMessage,
-    patchIncludeWeb: patchThreadIncludeWeb,
-    resetMessages,
-    setIncludeWebForQuestion,
-  } = useThreadChat(threadQuestionId);
-  const threadChunkIdx = externalQuestionId
-    ? (() => {
-        const entry = Object.entries(chunkQuestions).find(([, qid]) => qid === externalQuestionId);
-        return entry ? Number(entry[0]) : null;
-      })()
-    : activeQuestionChunkIdx;
-  const threadView: View = externalQuestionId ? "chat" : view;
-
-  // Scroll chat to bottom on update — but only if the user hasn't scrolled up to read earlier.
-  useEffect(() => {
-    if (chatPinnedRef.current) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamBuffer]);
-
-  // Re-pin to the bottom whenever a new message round starts streaming.
-  useEffect(() => {
-    if (streaming) chatPinnedRef.current = true;
-  }, [streaming]);
-
-  function handleNotesChange(value: string) {
-    setNotes(value);
-    setNotesSaveError(null);
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    setNotesSaving(true);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/sources/${sourceId}/notes`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ notes: value }),
-        });
-        if (!res.ok) {
-          const sizeKB = Math.round(new Blob([value]).size / 1024);
-          if (res.status === 413) {
-            setNotesSaveError(`Notes too large (${sizeKB} KB). Remove some images to save.`);
-          } else {
-            setNotesSaveError(`Save failed (HTTP ${res.status}).`);
-          }
-          console.error("[notes] save failed", res.status, await res.text().catch(() => ""));
-        }
-      } catch (err) {
-        setNotesSaveError("Save failed — check connection.");
-        console.error("[notes] save error", err);
-      } finally {
-        setNotesSaving(false);
-      }
-    }, 1200);
-  }
 
   function handleCite(ci: number) {
     notesEditorRef.current?.insertCitation(chunks[ci].offset);
@@ -186,10 +115,10 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   }, [activeChunkIdx, userScrolling, view, tab]);
 
   useEffect(() => {
-    if (threadView === "chat" && threadQuestionId === null) {
+    if (view === "chat") {
       setTimeout(() => inputRef.current?.focus(), 320);
     }
-  }, [threadView, threadQuestionId]);
+  }, [view]);
 
   const handleScroll = useCallback(() => {
     setUserScrolling(true);
@@ -223,6 +152,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
       const res = await fetch(`/api/sources/${sourceId}/transcript`);
       const data = (await res.json()) as { transcript?: string | null; error?: string };
       if (data.transcript) {
+        autoPollAttemptsRef.current = 99; // stop auto-polling on success
         onTranscriptUpdated?.(data.transcript);
       } else {
         setTranscriptRetryError(data.error ?? "Transcript unavailable for this video.");
@@ -234,69 +164,90 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
     }
   }
 
-  function handleAsk(ci: number) {
-    setActiveQuestionChunkIdx(ci);
-    resetMessages();
-    setFollowupInput("");
-    setNewThreadIncludeWeb(false);
-    if (chunkQuestions[ci]) {
-      setActiveQuestionId(chunkQuestions[ci]);
-      setQuestionInput("");
-    } else {
-      setActiveQuestionId(null);
-      setQuestionInput("");
+  // When a source has no transcript (e.g. the upload-time fetch failed), silently retry in
+  // the background up to MAX_AUTO_POLL times. Each attempt calls the same server route that
+  // already does its own 3-attempt retry with backoff, so we space client polls wider apart.
+  const MAX_AUTO_POLL = 3;
+  const AUTO_POLL_INTERVAL_MS = 8_000;
+
+  useEffect(() => {
+    if (rawTranscript) return; // already have transcript — nothing to do
+
+    autoPollAttemptsRef.current = 0;
+
+    function scheduleNextPoll() {
+      autoPollRef.current = setTimeout(async () => {
+        if (autoPollAttemptsRef.current >= MAX_AUTO_POLL) return;
+        autoPollAttemptsRef.current += 1;
+        try {
+          const res = await fetch(`/api/sources/${sourceId}/transcript`);
+          const data = (await res.json()) as { transcript?: string | null };
+          if (data.transcript) {
+            onTranscriptUpdated?.(data.transcript);
+            return; // success — stop polling
+          }
+        } catch {
+          // silently ignore network errors during background polling
+        }
+        scheduleNextPoll();
+      }, AUTO_POLL_INTERVAL_MS);
     }
+
+    scheduleNextPoll();
+
+    return () => {
+      if (autoPollRef.current) clearTimeout(autoPollRef.current);
+    };
+    // intentionally omit onTranscriptUpdated to avoid re-running on every render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceId, rawTranscript]);
+
+  function handleAsk(ci: number) {
+    // Existing thread on this chunk → open it directly in QuestionPanel.
+    if (chunkQuestions[ci]) {
+      onOpenThread(chunkQuestions[ci]);
+      return;
+    }
+    // New question → open the compose view for this passage.
+    setActiveQuestionChunkIdx(ci);
+    setQuestionInput("");
+    setNewThreadIncludeWeb(false);
     setView("chat");
   }
 
   async function submitQuestion() {
     if (!questionInput.trim() || activeQuestionChunkIdx === null || creating) return;
+    const chunkIdx = activeQuestionChunkIdx;
     setCreating(true);
     const initialMsg = questionInput;
-    const context = buildContext(segments, chunks, activeQuestionChunkIdx);
-    const chunkOffset = chunks[activeQuestionChunkIdx].offset;
-    const res = await fetch("/api/questions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sourceId, title: questionInput, context, chunkOffset, includeWeb: newThreadIncludeWeb }),
+    const question = await createQuestion({
+      sourceId,
+      title: questionInput,
+      context: buildContext(segments, chunks, chunkIdx),
+      chunkOffset: chunks[chunkIdx].offset,
+      includeWeb: newThreadIncludeWeb,
     });
-    const question = await res.json();
-    setChunkQuestions((prev) => ({ ...prev, [activeQuestionChunkIdx]: question.id }));
-    setQuestionInput("");
     setCreating(false);
+    if (!question) return;
+    setChunkQuestions((prev) => ({ ...prev, [chunkIdx]: question.id }));
+    setQuestionInput("");
+    // Reset compose view so a later "Back" lands on the transcript, not a stale compose box.
+    setView("transcript");
+    setActiveQuestionChunkIdx(null);
     onGraphRefresh();
-    setActiveQuestionId(question.id);
-    setIncludeWebForQuestion(question.id, newThreadIncludeWeb);
-    await streamMessage(initialMsg);
-    // Refresh after streaming completes — by this point the background title generation
-    // has finished and the graph node will show the AI-generated title.
-    onGraphRefresh();
-  }
 
-  async function sendFollowup() {
-    if (!followupInput.trim() || !threadQuestionId || streaming) return;
-    const content = followupInput;
-    setFollowupInput("");
-    await streamMessage(content);
-  }
-
-  async function summarize() {
-    if (!threadQuestionId) return;
-    setSummarizing(true);
-    await fetch(`/api/questions/${threadQuestionId}/summarize`, { method: "POST" });
-    setSummarizing(false);
-    onGraphRefresh();
+    // Navigate to QuestionPanel — it owns streaming + title generation.
+    if (onTranscriptQuestionCreated) onTranscriptQuestionCreated(question.id, initialMsg);
+    else onOpenThread(question.id);
   }
 
   function goBack() {
     setView("transcript");
-    setActiveQuestionId(null);
     setActiveQuestionChunkIdx(null);
-    resetMessages();
-    onCloseThread?.(); // clear the selected graph node, if the thread was opened from there
+    setQuestionInput("");
   }
 
-  const chatChunk = threadChunkIdx !== null ? chunks[threadChunkIdx] : null;
+  const chatChunk = activeQuestionChunkIdx !== null ? chunks[activeQuestionChunkIdx] : null;
   const isFiltering = searchQuery.trim() !== "" || threadsOnly;
   const showCounter = searchQuery.trim() !== "" && filteredItems.length > 0;
 
@@ -313,7 +264,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
         {/* ── Transcript / Summary / Notes panel ── */}
         <div
           className="absolute inset-0 flex flex-col transition-transform duration-300 ease-in-out"
-          style={{ transform: threadView === "chat" ? "translateX(-100%)" : "translateX(0)" }}
+          style={{ transform: view === "chat" ? "translateX(-100%)" : "translateX(0)" }}
         >
           {/* Tabs */}
           <div className="shrink-0 px-5 flex items-center gap-3 border-b py-2.5" style={{ borderColor: "var(--border)" }}>
@@ -428,7 +379,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
             <NotesView
               ref={notesEditorRef}
               content={notes}
-              onChange={handleNotesChange}
+              onChange={setNotes}
               saving={notesSaving}
               saveError={notesSaveError}
               onSeekTo={onSeekTo}
@@ -552,10 +503,10 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
           )}
         </div>
 
-        {/* ── Chat panel ── */}
+        {/* ── Compose panel — ask a new question about a passage, then navigate away ── */}
         <div
           className="absolute inset-0 flex flex-col transition-transform duration-300 ease-in-out"
-          style={{ transform: threadView === "chat" ? "translateX(0)" : "translateX(100%)" }}
+          style={{ transform: view === "chat" ? "translateX(0)" : "translateX(100%)" }}
         >
           {/* Header */}
           <div className="shrink-0 px-5 py-2.5 border-b flex items-center justify-between gap-3" style={{ borderColor: "var(--border)" }}>
@@ -566,149 +517,40 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
             >
               ← Transcript
             </button>
-            <div className="flex items-center gap-3">
-              {chatChunk && (
-                <span className="type-mono" style={{ fontSize: "0.68rem", letterSpacing: "0.03em", color: "var(--muted)" }}>
-                  {formatTime(chatChunk.offset)}
-                </span>
-              )}
-              {threadQuestionId && messages.length > 0 && (
-                <button
-                  onClick={summarize}
-                  disabled={summarizing}
-                  className="type-mono text-xs px-2.5 py-1 rounded disabled:opacity-40 hover:opacity-70 transition-opacity"
-                  style={{ color: "#5A7A56", background: "#F0F5EF", border: "1px solid #C8DCC5", fontSize: "0.68rem" }}
-                >
-                  {summarizing ? "saving…" : "✦ Save as card"}
-                </button>
-              )}
-            </div>
+            {chatChunk && (
+              <span className="type-mono" style={{ fontSize: "0.68rem", letterSpacing: "0.03em", color: "var(--muted)" }}>
+                {formatTime(chatChunk.offset)}
+              </span>
+            )}
           </div>
 
-          {/* Chunk quote — always pinned below header */}
+          {/* Chunk quote — the passage being asked about */}
           {chatChunk && (
-            <div
+            <PassageQuote
+              text={chatChunk.text}
+              label={formatTime(chatChunk.offset)}
               className="shrink-0 mx-5 my-3"
-              style={{ borderLeft: "2px solid var(--border)", paddingLeft: "0.875rem" }}
-            >
-              <div className="type-mono mb-1" style={{ fontSize: "0.65rem", letterSpacing: "0.03em", color: "var(--accent)" }}>
-                {formatTime(chatChunk.offset)}
-              </div>
-              <p className="text-sm leading-relaxed line-clamp-3" style={{ color: "var(--text-secondary)" }}>
-                {chatChunk.text}
-              </p>
-            </div>
+            />
           )}
 
-          {/* Pre-question input (no thread yet) */}
-          {threadQuestionId === null && (
-            <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-              <div className="flex-1" />
-              <div className="px-5 py-3 border-t shrink-0" style={{ borderColor: "var(--border)" }}>
-                <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Ask a question about this passage</p>
-                <div className="mb-2">
-                  <WebSearchToggle enabled={newThreadIncludeWeb} onChange={setNewThreadIncludeWeb} disabled={creating} />
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    ref={inputRef}
-                    value={questionInput}
-                    onChange={(e) => setQuestionInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") submitQuestion(); }}
-                    placeholder="e.g. Why does this require a vacuum?"
-                    disabled={creating}
-                    className="flex-1 text-sm px-3 py-2 rounded-lg border outline-none disabled:opacity-50"
-                    style={{ background: "var(--background)", borderColor: "var(--border)", color: "var(--foreground)" }}
-                  />
-                  <button
-                    onClick={submitQuestion}
-                    disabled={creating || !questionInput.trim()}
-                    className="shrink-0 w-9 h-9 flex items-center justify-center rounded-lg disabled:opacity-40 hover:opacity-90"
-                    style={{ background: "var(--accent)", color: "#fff" }}
-                  >
-                    {creating ? <span className="text-xs">…</span> : (
-                      <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                        <path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z" />
-                      </svg>
-                    )}
-                  </button>
-                </div>
+          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+            <div className="flex-1" />
+            <div className="px-5 py-3 border-t shrink-0" style={{ borderColor: "var(--border)" }}>
+              <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Ask a question about this passage</p>
+              <div className="mb-2">
+                <WebSearchToggle enabled={newThreadIncludeWeb} onChange={setNewThreadIncludeWeb} disabled={creating} />
               </div>
+              <ChatInput
+                ref={inputRef}
+                value={questionInput}
+                onChange={setQuestionInput}
+                onSend={submitQuestion}
+                placeholder="e.g. Why does this require a vacuum?"
+                disabled={creating}
+                sending={creating}
+              />
             </div>
-          )}
-
-          {/* Conversation (thread loaded or just created) */}
-          {threadQuestionId !== null && (
-            <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-              <div ref={chatScrollRef} onScroll={handleChatScroll} className="flex-1 overflow-y-auto min-h-0 px-5 py-3 flex flex-col gap-4">
-                {messages.map((m) => (
-                  <div key={m.id} className="flex flex-col gap-1">
-                    <span
-                      className="type-mono"
-                      style={{ fontSize: "0.65rem", letterSpacing: "0.05em", textTransform: "uppercase", color: m.role === "user" ? "var(--text-secondary)" : "var(--accent)" }}
-                    >
-                      {m.role === "user" ? "You" : "Assistant"}
-                    </span>
-                    {m.role === "assistant" ? (
-                      <div className="prose-answer text-sm" style={{ color: "var(--foreground)" }}>
-                        <ChatMarkdown content={m.content} />
-                      </div>
-                    ) : (
-                      <p className="text-sm leading-relaxed" style={{ color: "var(--foreground)" }}>{m.content}</p>
-                    )}
-                  </div>
-                ))}
-
-                {streaming && (
-                  <div className="flex flex-col gap-1">
-                    <span className="type-mono" style={{ fontSize: "0.65rem", letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--accent)" }}>
-                      Assistant
-                    </span>
-                    <div className="prose-answer text-sm" style={{ color: "var(--foreground)" }}>
-                      <ChatMarkdown content={streamBuffer} />
-                      <span className="animate-pulse ml-0.5" style={{ color: "var(--accent)" }}>▊</span>
-                    </div>
-                  </div>
-                )}
-
-                {messages.length === 0 && !streaming && (
-                  <p className="text-xs" style={{ color: "var(--muted)" }}>Loading…</p>
-                )}
-                <div ref={bottomRef} />
-              </div>
-
-              <div className="px-5 py-3 border-t shrink-0" style={{ borderColor: "var(--border)" }}>
-                <div className="mb-2">
-                  <WebSearchToggle
-                    enabled={threadIncludeWeb}
-                    onChange={patchThreadIncludeWeb}
-                    disabled={streaming}
-                  />
-                </div>
-                <div className="flex gap-2">
-                <input
-                  value={followupInput}
-                  onChange={(e) => setFollowupInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendFollowup(); } }}
-                  placeholder="Ask a follow-up…"
-                  disabled={streaming}
-                  className="flex-1 text-sm px-3 py-2 rounded-lg border outline-none disabled:opacity-50"
-                  style={{ background: "var(--background)", borderColor: "var(--border)", color: "var(--foreground)" }}
-                />
-                <button
-                  onClick={sendFollowup}
-                  disabled={streaming || !followupInput.trim()}
-                  className="shrink-0 w-9 h-9 flex items-center justify-center rounded-lg disabled:opacity-40 hover:opacity-90"
-                  style={{ background: "var(--accent)", color: "#fff" }}
-                >
-                  <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                    <path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z" />
-                  </svg>
-                </button>
-                </div>
-              </div>
-            </div>
-          )}
+          </div>
         </div>
       </div>
     </div>

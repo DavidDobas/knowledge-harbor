@@ -27,7 +27,10 @@ export function useWorkspaceData() {
     const cached = graphDataCache.current.get(sourceId);
     if (cached) return Promise.resolve(cached);
     return fetch(`/api/sources/${sourceId}/graph`)
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`graph fetch failed: ${r.status}`);
+        return r.json();
+      })
       .then((data) => {
         const result = {
           questions: Array.isArray(data.questions) ? data.questions as Question[] : [],
@@ -36,7 +39,8 @@ export function useWorkspaceData() {
         };
         graphDataCache.current.set(sourceId, result);
         return result;
-      });
+      })
+      .catch(() => ({ questions: [], cards: [], source: undefined }));
   }, []);
 
   useEffect(() => {

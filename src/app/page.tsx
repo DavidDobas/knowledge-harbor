@@ -62,7 +62,7 @@ export default function Home() {
 
   const fetchFullSourceDetails = useCallback((sourceId: string, tabId?: string) => {
     fetch(`/api/sources/${sourceId}`)
-      .then((r) => r.json())
+      .then((r) => r.ok ? r.json() : Promise.reject(r.status))
       .then((full) => {
         if (!full?.id) return;
         const id = tabId ?? activeTabIdRef.current;
@@ -102,7 +102,10 @@ export default function Home() {
       return;
     }
     if (graphDataLoadedForRef.current === sourceId) return;
-    if (tab.sourceQuestions.length > 0 && tab.activeSourceId === sourceId) {
+    // Guard 2: skip re-fetch if data is already in tab state AND we've previously loaded it
+    // in this session (ref !== null). The null check is important — after refresh() clears
+    // the ref, this guard must NOT fire, otherwise stale data prevents the re-fetch.
+    if (graphDataLoadedForRef.current !== null && tab.sourceQuestions.length > 0 && tab.activeSourceId === sourceId) {
       graphDataLoadedForRef.current = sourceId;
       return;
     }
@@ -402,7 +405,6 @@ export default function Home() {
                 />
                 <RightPanel
                   activeSource={tab.activeSource}
-                  sourceQuestions={tab.sourceQuestions}
                   selectedNode={tab.selectedNode}
                   activeChunkIdx={tab.activeChunkIdx}
                   viewMode={tab.viewMode}
@@ -456,6 +458,14 @@ export default function Home() {
                     } else {
                       desktopRefresh();
                     }
+                  }}
+                  onTranscriptQuestionCreated={(questionId, message) => {
+                    if (!visible) return;
+                    refresh();
+                    patchTab(tab.id, {
+                      pendingInitialMessage: { questionId, message },
+                      selectedNode: { type: "question", id: questionId },
+                    });
                   }}
                   onClearPendingInitialMessage={() => patchTab(tab.id, { pendingInitialMessage: null })}
                   onSourceTitleChange={visible ? handleDesktopSourceTitleChange : undefined}
