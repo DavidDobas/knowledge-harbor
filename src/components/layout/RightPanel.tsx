@@ -8,7 +8,7 @@ import NotePanel from "@/components/panels/NotePanel";
 import TranscriptWithChat from "@/components/source/TranscriptWithChat";
 import PdfRightPanel from "@/components/source/PdfRightPanel";
 import GeneralAskPanel from "@/components/panels/GeneralAskPanel";
-import type { Source, SelectedNode } from "@/lib/types";
+import type { Source, SelectedNode, Question } from "@/lib/types";
 import {
   RIGHT_PANEL_DEFAULT_WIDTH,
   RIGHT_PANEL_MIN_WIDTH,
@@ -36,6 +36,7 @@ interface Props {
   onTranscriptQuestionCreated?: (questionId: string, message: string) => void;
   onClearPendingInitialMessage?: () => void;
   onSourceTitleChange?: (sourceId: string, title: string) => void;
+  sourceQuestions?: Question[];
 }
 
 export default function RightPanel({
@@ -43,7 +44,7 @@ export default function RightPanel({
   onSelectNode, onGraphRefresh, onActiveSourceUpdate,
   pdfSelection, onClearPdfSelection, onOpenThread, onOpenSource,
   pendingInitialMessage, onPdfQuestionCreated, onGeneralQuestionCreated, onTranscriptQuestionCreated,
-  onClearPendingInitialMessage, onSourceTitleChange,
+  onClearPendingInitialMessage, onSourceTitleChange, sourceQuestions,
 }: Props) {
   const isYoutube = activeSource?.type === "youtube";
   const isPdf = activeSource?.type === "pdf";
@@ -205,13 +206,14 @@ export default function RightPanel({
       );
     }
 
-    // PDF source loaded, no selection / no node — show Notes + Summary tabs.
+    // PDF source loaded, no selection / no node — show Notes + Summary + Threads tabs.
     if (isPdf && activeSource) {
       return (
         <PdfRightPanel
           key={activeSource.id}
           sourceId={activeSource.id}
           initialSummary={activeSource.summary}
+          questions={sourceQuestions ?? []}
           onOpenThread={onOpenThread}
           onOpenSource={onOpenSource}
         />

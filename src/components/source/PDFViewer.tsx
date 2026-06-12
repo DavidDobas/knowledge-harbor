@@ -34,6 +34,8 @@ interface Props {
   pdfUrl: string;
   highlights: PdfHighlight[];
   targetPage?: number | null;
+  /** Override the persisted zoom on first render (e.g. pass window.innerWidth for mobile fit-to-width). */
+  initialPageWidth?: number;
   // text + anchor page + rects on that anchor page (selection toolbar's "Ask")
   onTextSelect: (text: string, page: number, rects: PdfRect[]) => void;
   onClearSelection: () => void;
@@ -405,12 +407,16 @@ function CommentCard({
 }
 
 export default function PDFViewer({
-  pdfUrl, highlights, targetPage,
+  pdfUrl, highlights, targetPage, initialPageWidth,
   onTextSelect, onClearSelection, onHighlightClick, onHighlight, onDeleteHighlight, onEditComment,
 }: Props) {
   const [numPages, setNumPages] = useState<number>(0);
   const [selBox, setSelBox] = useState<SelectionBox | null>(null);
-  const [pageWidth, setPageWidth] = useState<number>(readPersistedPageWidth);
+  const [pageWidth, setPageWidth] = useState<number>(() =>
+    initialPageWidth != null
+      ? Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, initialPageWidth))
+      : readPersistedPageWidth()
+  );
   const [pendingComment, setPendingComment] = useState<PendingComment | null>(null);
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const wheelFactorRef = useRef(1);
@@ -453,8 +459,9 @@ export default function PDFViewer({
     scroller.scrollTo({ top, behavior: "smooth" });
   }
 
-  // Track potential clicks vs drags on the highlight layer.
+  // Track potential clicks vs drags on the highlight layer (mouse and touch).
   const downPosRef = useRef<{ x: number; y: number } | null>(null);
+  const touchDownRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     try { window.localStorage.setItem(PDF_ZOOM_KEY, String(pageWidth)); } catch { /* ignore */ }
@@ -516,6 +523,46 @@ export default function PDFViewer({
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // Touch support: fire handleMouseUp after selection settles, and tap-to-open highlights.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const onTouchStart = (e: TouchEvent) => {
+      const t = e.changedTouches[0];
+      if (t) touchDownRef.current = { x: t.clientX, y: t.clientY };
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      const t = e.changedTouches[0];
+      const down = touchDownRef.current;
+      touchDownRef.current = null;
+
+      // Small delay so the browser finalises the Selection object before we read it.
+      setTimeout(() => {
+        handleMouseUp();
+
+        // Tap detection: treat as a click if finger barely moved.
+        if (!t || !down) return;
+        const dx = t.clientX - down.x;
+        const dy = t.clientY - down.y;
+        if (dx * dx + dy * dy > 100) return; // > ~10px = scroll, not tap
+        const sel = window.getSelection();
+        if (sel && sel.toString().trim().length > 0) return; // text selected
+        const hit = hitTestHighlight(t.clientX, t.clientY);
+        if (hit && hit.kind === "question") onHighlightClick(hit.id);
+      }, 50);
+    };
+
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchend", onTouchEnd);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Keep the anchored content point under the cursor when zoom changes. Runs before paint.
@@ -741,6 +788,7 @@ export default function PDFViewer({
       onMouseUp={handleContainerMouseUp}
       onMouseMove={handleContainerMouseMove}
       onMouseLeave={handleContainerMouseLeave}
+      onContextMenu={(e) => e.preventDefault()}
     >
       {/* Floating "Jump back" pill — visible after the user follows an internal PDF link.
           Position: fixed so it stays anchored to the viewport bottom regardless of which

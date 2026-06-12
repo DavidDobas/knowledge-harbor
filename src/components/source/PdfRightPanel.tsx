@@ -4,17 +4,19 @@ import { useRef, useState } from "react";
 import NotesView from "@/components/source/NotesView";
 import SummaryView from "@/components/source/SummaryView";
 import { useSourceNotes } from "@/hooks/useSourceNotes";
+import type { Question } from "@/lib/types";
 
-type Tab = "notes" | "summary";
+type Tab = "notes" | "summary" | "threads";
 
 interface Props {
   sourceId: string;
   initialSummary?: string | null;
+  questions: Question[];
   onOpenThread: (questionId: string) => void;
   onOpenSource?: (sourceId: string) => void;
 }
 
-export default function PdfRightPanel({ sourceId, initialSummary, onOpenThread, onOpenSource }: Props) {
+export default function PdfRightPanel({ sourceId, initialSummary, questions, onOpenThread, onOpenSource }: Props) {
   const [tab, setTab] = useState<Tab>("notes");
   const { notes, loaded, setNotes } = useSourceNotes(sourceId);
   const [saving, setSaving] = useState(false);
@@ -48,6 +50,7 @@ export default function PdfRightPanel({ sourceId, initialSummary, onOpenThread, 
   const TABS: { id: Tab; label: string }[] = [
     { id: "notes", label: "Notes" },
     { id: "summary", label: "Summary" },
+    { id: "threads", label: "Threads" },
   ];
 
   return (
@@ -98,6 +101,37 @@ export default function PdfRightPanel({ sourceId, initialSummary, onOpenThread, 
       >
         <SummaryView sourceId={sourceId} initialSummary={initialSummary} />
       </div>
+
+      {tab === "threads" && (
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          {questions.length === 0 ? (
+            <p className="px-5 py-8 text-xs text-center" style={{ color: "var(--muted)" }}>
+              No threads yet. Select text in the PDF and ask a question.
+            </p>
+          ) : (
+            <ul className="px-3 py-3 flex flex-col gap-1">
+              {[...questions].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map((q) => (
+                <li key={q.id}>
+                  <button
+                    onClick={() => onOpenThread(q.id)}
+                    className="w-full text-left px-3 py-2.5 rounded-lg transition-colors hover:opacity-80"
+                    style={{ background: "var(--background)", border: "1px solid var(--border)" }}
+                  >
+                    <p className="type-serif text-sm truncate" style={{ color: "var(--foreground)" }}>
+                      {q.title}
+                    </p>
+                    {q.pdfPage != null && (
+                      <p className="type-mono mt-0.5" style={{ fontSize: "0.65rem", color: "var(--muted)", letterSpacing: "0.04em" }}>
+                        p.{q.pdfPage}
+                      </p>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }

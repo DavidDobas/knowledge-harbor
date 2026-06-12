@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useMemo } from "react";
-import { parseTranscript, type TranscriptSegment } from "@/lib/youtube";
+import { parseTranscript } from "@/lib/youtube";
+import { groupIntoChunkIndices } from "@/lib/transcriptChunks";
 
 declare global {
   interface Window {
@@ -26,25 +27,6 @@ interface YTPlayer {
 
 const POSITION_KEY = (videoId: string) => `kh.yt.position.${videoId}`;
 
-interface Chunk { segStart: number; segEnd: number; }
-
-function groupIntoChunks(segments: TranscriptSegment[]): Chunk[] {
-  const chunks: Chunk[] = [];
-  let i = 0;
-  while (i < segments.length) {
-    const start = i;
-    let text = "";
-    while (i < segments.length) {
-      text += (text ? " " : "") + segments[i].text;
-      i++;
-      if (/[.?!]\s*$/.test(text.trim()) && text.length >= 200) break;
-      if (text.length >= 800) break;
-    }
-    chunks.push({ segStart: start, segEnd: i - 1 });
-  }
-  return chunks;
-}
-
 interface Props {
   videoId: string;
   rawTranscript: string;
@@ -56,10 +38,20 @@ export default function YouTubePlayer({ videoId, rawTranscript, onActiveChunkIdx
   const playerRef = useRef<YTPlayer | null>(null);
   const playerElRef = useRef<HTMLDivElement>(null);
   const playerReadyRef = useRef(false);
+  const pendingSeekMsRef = useRef<number | null>(null);
   const lastChunkRef = useRef(-1);
 
+  function seekToMs(ms: number) {
+    const p = playerRef.current;
+    if (!p || !playerReadyRef.current || typeof p.seekTo !== "function") {
+      pendingSeekMsRef.current = ms;
+      return;
+    }
+    p.seekTo(ms / 1000, true);
+  }
+
   const segments = useMemo(() => (rawTranscript ? parseTranscript(rawTranscript) : []), [rawTranscript]);
-  const chunks = useMemo(() => groupIntoChunks(segments), [segments]);
+  const chunks = useMemo(() => groupIntoChunkIndices(segments), [segments]);
 
   useEffect(() => {
     // Read previously saved position (in seconds) for this video, if any.
@@ -76,7 +68,17 @@ export default function YouTubePlayer({ videoId, rawTranscript, onActiveChunkIdx
           ...(startSeconds > 2 ? { start: startSeconds } : {}),
         },
         events: {
-          onReady: () => { playerReadyRef.current = true; },
+          onReady: () => {
+            playerReadyRef.current = true;
+            const pending = pendingSeekMsRef.current;
+            if (pending != null) {
+              pendingSeekMsRef.current = null;
+              const ready = playerRef.current;
+              if (ready && typeof ready.seekTo === "function") {
+                ready.seekTo(pending / 1000, true);
+              }
+            }
+          },
         },
       });
     };
@@ -91,11 +93,17 @@ export default function YouTubePlayer({ videoId, rawTranscript, onActiveChunkIdx
         document.head.appendChild(script);
       }
     }
-    return () => { playerRef.current?.destroy(); playerRef.current = null; playerReadyRef.current = false; };
+    return () => {
+      playerReadyRef.current = false;
+      pendingSeekMsRef.current = null;
+      const p = playerRef.current;
+      playerRef.current = null;
+      if (p && typeof p.destroy === "function") p.destroy();
+    };
   }, [videoId]);
 
   useEffect(() => {
-    onRegisterSeek((ms) => playerRef.current?.seekTo(ms / 1000, true));
+    onRegisterSeek(seekToMs);
   }, [onRegisterSeek]);
 
   useEffect(() => {

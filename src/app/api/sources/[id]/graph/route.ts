@@ -33,6 +33,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
         origin: questions.origin,
         chunkOffset: questions.chunkOffset,
         pdfPage: questions.pdfPage,
+        pdfHighlightText: questions.pdfHighlightText,
+        pdfHighlightRects: questions.pdfHighlightRects,
+        includeFile: questions.includeFile,
+        includeWeb: questions.includeWeb,
         createdAt: questions.createdAt,
       })
       .from(questions)
@@ -67,10 +71,6 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     questions: qs.map((q) => ({
       ...q,
       origin: q.origin ?? "passage",
-      pdfHighlightText: null,
-      pdfHighlightRects: null,
-      includeFile: true,
-      includeWeb: false,
     })),
     cards: cs.map((c) => ({ ...c, summary: "" })),
   });
