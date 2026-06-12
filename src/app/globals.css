@@ -337,3 +337,83 @@ body {
   display: inline;
   padding: 0;
 }
+
+/* ── Mobile shell ─────────────────────────────────────────────────────── */
+.mobile-safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+/* Inner content row inside a .mobile-safe-top header — gets equal vertical padding
+   so items are visually centred beneath the (variable) safe-area gap. */
+.mobile-header-row {
+  display: flex;
+  align-items: center;
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+}
+.mobile-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.mobile-touch-target {
+  min-height: 44px;
+  min-width: 44px;
+}
+.mobile-tab-bar {
+  border-bottom: 1px solid var(--border);
+}
+.mobile-tab-bar button {
+  min-height: 44px;
+}
+.mobile-tab-indicator {
+  position: absolute;
+  bottom: 0;
+  left: 20%;
+  right: 20%;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--foreground);
+}
+.mobile-youtube-layout {
+  overflow: hidden;
+}
+.mobile-video-stage {
+  overflow: visible;
+}
+.mobile-content-sheet {
+  background: var(--background);
+  overflow: hidden;
+  isolation: isolate;
+  padding-top: 0rem;
+  margin-bottom: 0rem;
+}
+
+.mobile-transcript-row {
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.mobile-transcript-row[data-active="true"] {
+  background: var(--active-row);
+}
+.mobile-transcript-row[data-threaded="true"]:not([data-active="true"]) {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.mobile-thread-card {
+  display: block;
+  min-height: 44px;
+}
+.mobile-thread-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.mobile-thread-preview p {
+  display: inline;
+  margin: 0;
+}
+.mobile-thread-preview p + p::before {
+  content: " ";
+}
+.mobile-thread-preview strong {
+  font-weight: 600;
+  color: var(--foreground);
+}

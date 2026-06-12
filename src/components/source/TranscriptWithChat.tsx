@@ -1,64 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { parseTranscript, type TranscriptSegment } from "@/lib/youtube";
+import { parseTranscript } from "@/lib/youtube";
 import { formatTime } from "@/lib/utils";
+import { groupIntoChunks, buildContext } from "@/lib/transcriptChunks";
 import WebSearchToggle from "@/components/source/WebSearchToggle";
 import ChatInput, { type ChatInputHandle } from "@/components/ui/ChatInput";
 import PassageQuote from "@/components/ui/PassageQuote";
 import SummaryView from "@/components/source/SummaryView";
 import NotesView, { type NotesViewHandle } from "@/components/source/NotesView";
 import { useSourceNotes } from "@/hooks/useSourceNotes";
-import { fetchJson } from "@/lib/fetchJson";
+import { useChunkQuestions } from "@/hooks/useSourceQuestions";
 import { createQuestion } from "@/lib/questions";
 
 type Tab = "transcript" | "summary" | "notes";
 type View = "transcript" | "chat";
-
-interface DisplayChunk {
-  text: string;
-  offset: number;
-  segStart: number;
-  segEnd: number;
-}
-
-function groupIntoChunks(segments: TranscriptSegment[]): DisplayChunk[] {
-  const chunks: DisplayChunk[] = [];
-  let i = 0;
-  while (i < segments.length) {
-    const start = i;
-    let text = "";
-    while (i < segments.length) {
-      text += (text ? " " : "") + segments[i].text;
-      i++;
-      if (/[.?!]\s*$/.test(text.trim()) && text.length >= 200) break;
-      if (text.length >= 800) break;
-    }
-    chunks.push({ text, offset: segments[start].offset, segStart: start, segEnd: i - 1 });
-  }
-  return chunks;
-}
-
-function fmtSegs(segments: TranscriptSegment[], from: number, to: number): string {
-  return segments.slice(from, to + 1).map((s) => `[${formatTime(s.offset)}] ${s.text}`).join("\n");
-}
-
-function buildContext(segments: TranscriptSegment[], chunks: DisplayChunk[], chunkIdx: number): string {
-  const chunk = chunks[chunkIdx];
-  const current = fmtSegs(segments, chunk.segStart, chunk.segEnd);
-
-  // Up to 2 preceding chunks, kept separate so the LLM knows what's actually being asked about.
-  const precFrom = Math.max(0, chunkIdx - 2);
-  let preceding = "";
-  if (precFrom < chunkIdx) {
-    preceding = fmtSegs(segments, chunks[precFrom].segStart, chunks[chunkIdx - 1].segEnd);
-  }
-
-  const parts: string[] = [];
-  if (preceding) parts.push(`### PRECEDING CONTEXT (for reference only)\n${preceding}`);
-  parts.push(`### CURRENT PASSAGE (the question is about THIS)\n${current}`);
-  return parts.join("\n\n");
-}
 
 function highlightText(text: string, query: string): React.ReactNode {
   if (!query.trim()) return text;
@@ -107,7 +63,6 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
   const [view, setView] = useState<View>("transcript");
 
   // Transcript state
-  const [chunkQuestions, setChunkQuestions] = useState<Record<number, string>>({});
   const [userScrolling, setUserScrolling] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatchCursor, setSearchMatchCursor] = useState(0);
@@ -135,21 +90,7 @@ export default function TranscriptWithChat({ sourceId, rawTranscript, activeChun
 
   const segments = useMemo(() => (rawTranscript ? parseTranscript(rawTranscript) : []), [rawTranscript]);
   const chunks = useMemo(() => groupIntoChunks(segments), [segments]);
-
-  // Load persisted questions
-  useEffect(() => {
-    fetchJson<Array<{ id: string; chunkOffset: number | null }>>(`/api/questions?sourceId=${sourceId}`)
-      .then((qs) => {
-        if (!qs) return;
-        const map: Record<number, string> = {};
-        qs.forEach((q) => {
-          if (q.chunkOffset == null) return;
-          const ci = chunks.findIndex((c) => c.offset === q.chunkOffset);
-          if (ci >= 0) map[ci] = q.id;
-        });
-        setChunkQuestions(map);
-      });
-  }, [sourceId, chunks]);
+  const { chunkQuestions, setChunkQuestions } = useChunkQuestions(sourceId, chunks);
 
   function handleCite(ci: number) {
     notesEditorRef.current?.insertCitation(chunks[ci].offset);

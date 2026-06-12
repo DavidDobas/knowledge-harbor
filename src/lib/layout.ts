@@ -1,3 +1,6 @@
+/** Viewport width at which the mobile shell replaces the desktop layout. */
+export const MOBILE_BREAKPOINT = 768;
+
 /** Shared width for the left sidebar and the header brand column. */
 export const SIDEBAR_WIDTH = 240;
 

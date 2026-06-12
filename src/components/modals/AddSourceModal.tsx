@@ -9,9 +9,11 @@ interface Props {
   spaceId: string | null;
   onClose: () => void;
   onAdded: () => void;
+  /** Hide PDF tab (mobile Phase 1). */
+  mobileOnly?: boolean;
 }
 
-export default function AddSourceModal({ spaceId, onClose, onAdded }: Props) {
+export default function AddSourceModal({ spaceId, onClose, onAdded, mobileOnly = false }: Props) {
   const [tab, setTab] = useState<"pdf" | "youtube" | "note">("youtube");
   const [title, setTitle] = useState("");
   const [youtubeUrl, setYoutubeUrl] = useState("");
