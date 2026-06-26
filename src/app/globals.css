@@ -211,6 +211,39 @@ body {
 .notes-prosemirror ul { list-style: disc; padding-left: 1.25rem; }
 .notes-prosemirror ol { list-style: decimal; padding-left: 1.25rem; }
 .notes-prosemirror li + li { margin-top: 0.15rem; }
+/* Task list (Tiptap TaskList/TaskItem) — render each item with its checkbox inline.
+   Tiptap emits `<ul data-type="taskList">` with `<li data-type="taskItem">` children
+   containing `<label><input type="checkbox"></label><div>...</div>`. Strip the disc
+   marker on the parent and lay out the row as flex. */
+.notes-prosemirror ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0.25rem;
+}
+.notes-prosemirror ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+.notes-prosemirror ul[data-type="taskList"] li > label {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 0.2rem;
+  user-select: none;
+}
+.notes-prosemirror ul[data-type="taskList"] li > label > input[type="checkbox"] {
+  cursor: pointer;
+  width: 13px;
+  height: 13px;
+  accent-color: var(--accent);
+}
+.notes-prosemirror ul[data-type="taskList"] li > div {
+  flex: 1;
+  min-width: 0;
+}
+.notes-prosemirror ul[data-type="taskList"] li[data-checked="true"] > div {
+  color: var(--muted);
+  text-decoration: line-through;
+}
 .notes-prosemirror blockquote {
   border-left: 3px solid var(--border);
   padding-left: 0.875rem;

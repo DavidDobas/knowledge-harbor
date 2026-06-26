@@ -8,6 +8,8 @@ import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
 import { Mathematics } from "@tiptap/extension-mathematics";
 import { Table, TableRow, TableHeader, TableCell } from "@tiptap/extension-table";
+import TaskList from "@tiptap/extension-task-list";
+import TaskItem from "@tiptap/extension-task-item";
 import { ResizableImage } from "@/components/source/ResizableImage";
 import { ThreadRef } from "@/components/source/ThreadRef";
 import { SourceRef } from "@/components/source/SourceRef";
@@ -231,6 +233,10 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
       TableRow,
       TableHeader,
       TableCell,
+      TaskList,
+      // nested: true lets the user indent sub-tasks. Each item is its own checkbox bound
+      // to the node's `checked` attribute — Tiptap persists that into the saved HTML.
+      TaskItem.configure({ nested: true }),
       Placeholder.configure({
         placeholder:
           "Start writing… Type # for heading, @ to reference a chat, ref → on transcript chunks for timestamps.",
@@ -498,24 +504,72 @@ const NotesView = forwardRef<NotesViewHandle, Props>(function NotesView(
         document.body
       )}
 
-      {/* Slim toolbar for image + saving indicator */}
+      {/* Slim toolbar for inserts + saving indicator. Buttons reflect the active mark
+          state so the user sees what's applied at the caret. */}
       <div
         className="shrink-0 flex items-center justify-between px-4 py-1.5 border-b"
         style={{ borderColor: "var(--border)" }}
       >
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          title="Insert image (or drag & drop)"
-          className="flex items-center gap-1 type-mono text-xs transition-opacity hover:opacity-60"
-          style={{ color: "var(--muted)" }}
-        >
-          <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <circle cx="8.5" cy="8.5" r="1.5" />
-            <polyline points="21 15 16 10 5 21" />
-          </svg>
-          img
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            title="Insert image (or drag & drop)"
+            className="flex items-center gap-1 type-mono text-xs transition-opacity hover:opacity-60"
+            style={{ color: "var(--muted)" }}
+          >
+            <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+            img
+          </button>
+          <button
+            onClick={() => editor?.chain().focus().toggleTaskList().run()}
+            title="Toggle checklist"
+            className="flex items-center gap-1 type-mono text-xs transition-opacity hover:opacity-60"
+            style={{ color: editor?.isActive("taskList") ? "var(--accent)" : "var(--muted)" }}
+          >
+            <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <rect x="3" y="3" width="7" height="7" rx="1.5" />
+              <path d="M5 6.5l1.4 1.4L8.5 5.5" />
+              <line x1="13" y1="6.5" x2="21" y2="6.5" />
+              <line x1="13" y1="17.5" x2="21" y2="17.5" />
+              <rect x="3" y="14" width="7" height="7" rx="1.5" />
+            </svg>
+            todo
+          </button>
+          <button
+            onClick={() => editor?.chain().focus().toggleBulletList().run()}
+            title="Toggle bullet list"
+            className="flex items-center gap-1 type-mono text-xs transition-opacity hover:opacity-60"
+            style={{ color: editor?.isActive("bulletList") ? "var(--accent)" : "var(--muted)" }}
+          >
+            <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <circle cx="5" cy="6" r="1.4" fill="currentColor" />
+              <circle cx="5" cy="12" r="1.4" fill="currentColor" />
+              <circle cx="5" cy="18" r="1.4" fill="currentColor" />
+              <line x1="10" y1="6" x2="21" y2="6" />
+              <line x1="10" y1="12" x2="21" y2="12" />
+              <line x1="10" y1="18" x2="21" y2="18" />
+            </svg>
+            list
+          </button>
+          <button
+            onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+            title="Toggle numbered list"
+            className="flex items-center gap-1 type-mono text-xs transition-opacity hover:opacity-60"
+            style={{ color: editor?.isActive("orderedList") ? "var(--accent)" : "var(--muted)" }}
+          >
+            <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <line x1="10" y1="6" x2="21" y2="6" />
+              <line x1="10" y1="12" x2="21" y2="12" />
+              <line x1="10" y1="18" x2="21" y2="18" />
+              <path d="M4 4h2v4M3 12h3l-3 4h3M3 18h3" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            1. list
+          </button>
+        </div>
         <input
           ref={fileInputRef}
           type="file"
