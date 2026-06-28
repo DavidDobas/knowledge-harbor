@@ -13,19 +13,24 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const body = await req.json();
-  const { title, includeWeb, includeFile } = body as {
+  const { title, includeWeb, includeFile, attachedSourceIds } = body as {
     title?: string;
     includeWeb?: boolean;
     includeFile?: boolean;
+    attachedSourceIds?: string[];
   };
 
-  const updates: { title?: string; includeWeb?: boolean; includeFile?: boolean } = {};
+  const updates: { title?: string; includeWeb?: boolean; includeFile?: boolean; attachedSourceIds?: string | null } = {};
   if (typeof title === "string" && title.trim()) updates.title = title.trim();
   if (typeof includeWeb === "boolean") updates.includeWeb = includeWeb;
   if (typeof includeFile === "boolean") updates.includeFile = includeFile;
+  if (Array.isArray(attachedSourceIds)) {
+    const cleaned = attachedSourceIds.filter((x): x is string => typeof x === "string");
+    updates.attachedSourceIds = cleaned.length > 0 ? JSON.stringify(cleaned) : null;
+  }
 
   if (Object.keys(updates).length === 0) {
-    return NextResponse.json({ error: "title, includeWeb, or includeFile required" }, { status: 400 });
+    return NextResponse.json({ error: "title, includeWeb, includeFile, or attachedSourceIds required" }, { status: 400 });
   }
 
   const [row] = await db.update(questions).set(updates).where(eq(questions.id, id)).returning();

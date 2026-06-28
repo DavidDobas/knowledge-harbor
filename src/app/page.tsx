@@ -441,6 +441,7 @@ export default function Home() {
                       pdfHighlightRects: null,
                       includeFile: src?.type === "pdf",
                       includeWeb: false,
+                      attachedSourceIds: null,
                       createdAt: new Date().toISOString(),
                     };
                     patchTab(tab.id, {

@@ -21,8 +21,10 @@ interface Props {
 // Shared chat composer: an auto-growing textarea + send button.
 // The bordered wrapper owns the background and the textarea is transparent, so when
 // the textarea scrolls internally and rubber-bands, the overscroll reveals the same
-// colour as the box rather than the panel behind it. Enter inserts a newline; sending
-// is button-only.
+// colour as the box rather than the panel behind it.
+//
+// Keyboard: Enter submits, Shift+Enter inserts a newline. Suppressed during IME
+// composition so users typing Japanese/Chinese/Korean don't fire submits mid-word.
 const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
   { value, onChange, onSend, placeholder, disabled = false, sending = false, autoFocus, maxHeight },
   ref,
@@ -39,6 +41,12 @@ const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
           ref={ref}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              if (canSend) onSend();
+            }
+          }}
           placeholder={placeholder}
           disabled={disabled}
           autoFocus={autoFocus}

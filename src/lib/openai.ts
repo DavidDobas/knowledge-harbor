@@ -53,8 +53,9 @@ export function buildResponsesInstructions(opts: {
   hasWebSearch?: boolean;
   sourceType?: string | null;
   notes?: string | null;
+  attachedRefs?: Array<{ type: "pdf" | "youtube"; title: string }>;
 }): string {
-  const { transcript, passageContext, summary, hasFileContext, hasWebSearch, sourceType, notes } = opts;
+  const { transcript, passageContext, summary, hasFileContext, hasWebSearch, sourceType, notes, attachedRefs } = opts;
   const webLine = hasWebSearch
     ? " The web_search tool is available — USE IT PROACTIVELY. " +
       "When the user asks about cited sources, references, or works mentioned in the paper " +
@@ -64,11 +65,20 @@ export function buildResponsesInstructions(opts: {
       "definitions of external concepts, and follow-up reading. When in doubt, search. " +
       "Skip it only when the question is answerable purely from the attached source."
     : "";
+  // Attachments line — tells the model that extra reference PDFs / transcripts are
+  // present on the first user message so it knows to treat them as background, not as
+  // the primary subject of the question.
+  const attachedLine = attachedRefs && attachedRefs.length > 0
+    ? " Additional reference materials are attached on the first user turn: " +
+      attachedRefs.map((r) => `${r.type === "pdf" ? "[PDF]" : "[Video transcript]"} ${r.title}`).join("; ") +
+      ". Use them as supporting context — cite them by title when you draw on them."
+    : "";
   const base =
     "You are a helpful research assistant. " +
     "Format any mathematics with KaTeX: inline math as $...$ and display equations as $$...$$. " +
     "Never use \\( \\) or bare square brackets for math." +
-    webLine;
+    webLine +
+    attachedLine;
 
   if (passageContext) {
     const broader = hasFileContext

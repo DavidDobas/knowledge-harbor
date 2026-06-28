@@ -5,6 +5,7 @@ import type { Space, Source } from "@/lib/types";
 import { SPACE_COLORS } from "@/lib/colors";
 import { SIDEBAR_WIDTH } from "@/lib/layout";
 import AddSourceModal from "@/components/modals/AddSourceModal";
+import SourceTypeIcon from "@/components/ui/SourceTypeIcon";
 
 function SpaceIcon({ name, color }: { name: string; color: string }) {
   return (
@@ -25,61 +26,6 @@ function SpaceIcon({ name, color }: { name: string; color: string }) {
   );
 }
 
-function YouTubeIcon() {
-  return (
-    <span
-      className="shrink-0 flex items-center justify-center rounded-md"
-      style={{ width: 28, height: 20, background: "#FF0000" }}
-    >
-      <svg width="9" height="9" fill="white" viewBox="0 0 24 24">
-        <path d="M8 5v14l11-7z" />
-      </svg>
-    </span>
-  );
-}
-
-function NoteIcon() {
-  return (
-    <span
-      className="shrink-0 flex items-center justify-center rounded-md"
-      style={{ width: 28, height: 28, background: "#6B8F7122", border: "1px solid #6B8F7144" }}
-    >
-      <svg width="13" height="13" fill="none" stroke="#6B8F71" strokeWidth="2" viewBox="0 0 24 24">
-        <path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-      </svg>
-    </span>
-  );
-}
-
-function PDFIcon() {
-  return (
-    <span className="shrink-0 relative" style={{ width: 22, height: 26 }}>
-      <svg width="22" height="26" fill="none" viewBox="0 0 22 26">
-        <path
-          d="M3 1h11l6 6v18a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z"
-          fill="var(--background)"
-          stroke="var(--border)"
-          strokeWidth="1.5"
-        />
-        <path d="M14 1v6h6" stroke="var(--border)" strokeWidth="1.5" fill="none" />
-        <text
-          x="11"
-          y="20"
-          textAnchor="middle"
-          style={{ fontFamily: "monospace", fontSize: "6px", fill: "#E05252", fontWeight: 700, letterSpacing: "0.02em" }}
-        >
-          PDF
-        </text>
-      </svg>
-    </span>
-  );
-}
-
-function SourceTypeIcon({ type }: { type: Source["type"] }) {
-  if (type === "youtube") return <YouTubeIcon />;
-  if (type === "note") return <NoteIcon />;
-  return <PDFIcon />;
-}
 
 interface Props {
   spaces: Space[];

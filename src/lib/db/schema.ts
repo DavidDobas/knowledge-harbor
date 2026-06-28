@@ -40,6 +40,10 @@ export const questions = pgTable("questions", {
   // Per-thread opt-in: when true, the Responses call is given the hosted `web_search` tool
   // and URL citations are appended to the assistant reply.
   includeWeb: boolean("include_web").default(false).notNull(),
+  // Additional sources attached to this thread as context — JSON array of source IDs.
+  // PDFs are sent as input_file, YouTube transcripts as input_text, materialised on the
+  // first user message so the prompt cache prefix stays stable.
+  attachedSourceIds: text("attached_source_ids"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

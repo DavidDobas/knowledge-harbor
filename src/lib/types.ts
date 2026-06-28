@@ -39,6 +39,7 @@ export interface Question {
   pdfHighlightRects: string | null;
   includeFile: boolean;
   includeWeb: boolean;
+  attachedSourceIds: string | null;
   createdAt: string;
 }
 

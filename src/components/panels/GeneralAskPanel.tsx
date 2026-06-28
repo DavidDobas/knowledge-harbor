@@ -3,6 +3,8 @@
 import { useState } from "react";
 import WebSearchToggle from "@/components/source/WebSearchToggle";
 import ChatInput from "@/components/ui/ChatInput";
+import SourcePicker from "@/components/panels/SourcePicker";
+import SourceTypeIcon from "@/components/ui/SourceTypeIcon";
 import { createQuestion } from "@/lib/questions";
 import type { Source } from "@/lib/types";
 
@@ -22,6 +24,7 @@ export default function GeneralAskPanel({ source, onQuestionCreated, onDismiss }
   const [message, setMessage] = useState("");
   const [creating, setCreating] = useState(false);
   const [includeWeb, setIncludeWeb] = useState(false);
+  const [attached, setAttached] = useState<Source[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit() {
@@ -35,6 +38,7 @@ export default function GeneralAskPanel({ source, onQuestionCreated, onDismiss }
       origin: "general",
       includeFile: source.type === "pdf",
       includeWeb,
+      attachedSourceIds: attached.map((s) => s.id),
     });
     setCreating(false);
     if (!question) {
@@ -63,15 +67,46 @@ export default function GeneralAskPanel({ source, onQuestionCreated, onDismiss }
         </span>
       </div>
 
-      <div className="flex-1 flex flex-col justify-end px-5 py-4 min-h-0">
-        <p className="text-xs mb-3 leading-relaxed" style={{ color: "var(--muted)" }}>
+      {/* Empty scrollable middle keeps the input glued to the bottom even before the
+          parent finishes its first layout pass. The earlier `justify-end` approach
+          clipped the composer on initial mount when the panel hadn't sized yet. */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4" />
+
+      <div className="px-5 py-3 border-t shrink-0" style={{ borderColor: "var(--border)" }}>
+        <p className="text-xs mb-2 leading-relaxed" style={{ color: "var(--muted)" }}>
           {HINTS[source.type]}
         </p>
         {error && (
           <p className="text-xs mb-2" style={{ color: "#c0392b" }}>{error}</p>
         )}
-        <div className="mb-2">
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          {attached.map((s) => (
+            <div
+              key={s.id}
+              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border"
+              style={{ background: "var(--accent-light)", borderColor: "color-mix(in srgb, var(--accent) 25%, transparent)" }}
+            >
+              <SourceTypeIcon type={s.type} compact />
+              <span className="type-mono truncate" style={{ fontSize: "0.7rem", color: "var(--accent)", maxWidth: 160 }} title={s.title}>
+                {s.title}
+              </span>
+              <button
+                type="button"
+                onClick={() => setAttached((prev) => prev.filter((p) => p.id !== s.id))}
+                disabled={creating}
+                className="ml-0.5 hover:opacity-60 transition-opacity"
+                style={{ color: "var(--accent)", fontSize: "0.85rem", lineHeight: 1 }}
+                title="Remove attached source"
+              >
+                ×
+              </button>
+            </div>
+          ))}
           <WebSearchToggle enabled={includeWeb} onChange={setIncludeWeb} disabled={creating} />
+          <SourcePicker
+            excludeIds={[source.id, ...attached.map((s) => s.id)]}
+            onPick={(s) => setAttached((prev) => (prev.some((p) => p.id === s.id) ? prev : [...prev, s]))}
+          />
         </div>
         <ChatInput
           value={message}

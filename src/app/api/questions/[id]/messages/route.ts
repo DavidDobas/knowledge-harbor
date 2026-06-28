@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { messages, questions, sources } from "@/lib/db/schema";
-import { eq, asc } from "drizzle-orm";
+import { eq, asc, inArray } from "drizzle-orm";
 import { openai, buildResponsesInstructions, ensureOpenaiFileId, CHAT_MODEL } from "@/lib/openai";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 
@@ -30,6 +30,40 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     try { fileId = await ensureOpenaiFileId(source.id); } catch { fileId = null; }
   }
 
+  // Resolve attached sources (other PDFs / YouTube videos from the user's library).
+  // Order is preserved from the stored JSON so the prompt cache prefix is deterministic.
+  let attachedIds: string[] = [];
+  if (question?.attachedSourceIds) {
+    try {
+      const parsed = JSON.parse(question.attachedSourceIds);
+      if (Array.isArray(parsed)) attachedIds = parsed.filter((x): x is string => typeof x === "string");
+    } catch { /* malformed JSON → treat as no attachments */ }
+  }
+  const attachedRows = attachedIds.length > 0
+    ? await db.select().from(sources).where(inArray(sources.id, attachedIds))
+    : [];
+  // Re-sort to match the ID order in attachedIds (DB returns arbitrary order).
+  const byId = new Map(attachedRows.map((r) => [r.id, r]));
+  const attached = attachedIds.map((aid) => byId.get(aid)).filter((r): r is NonNullable<typeof r> => !!r);
+
+  // Materialise each attachment into parts that land on the first user message.
+  // PDFs become input_file (lazy upload + cache); YouTube becomes input_text with the
+  // transcript prefixed by a title header so the model can tell sources apart.
+  const attachmentParts: Array<{ type: "input_text"; text: string } | { type: "input_file"; file_id: string }> = [];
+  for (const ref of attached) {
+    if (ref.type === "pdf") {
+      try {
+        const refFileId = await ensureOpenaiFileId(ref.id);
+        if (refFileId) attachmentParts.push({ type: "input_file", file_id: refFileId });
+      } catch { /* skip on upload failure */ }
+    } else if (ref.type === "youtube" && ref.transcript) {
+      attachmentParts.push({
+        type: "input_text",
+        text: `## Attached reference: ${ref.title}\n\n${ref.transcript}`,
+      });
+    }
+  }
+
   const instructions = buildResponsesInstructions({
     transcript: source?.transcript ?? null,
     passageContext: question?.context ?? null,
@@ -38,14 +72,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     hasWebSearch: question?.includeWeb === true,
     sourceType: source?.type ?? null,
     notes: source?.notes ?? null,
+    attachedRefs: attached.map((r) => ({ type: r.type as "pdf" | "youtube", title: r.title })),
   });
 
   // Build the input array as a conversation. The first user message carries the input_file
-  // (when present) so the same prefix lands on every turn → prompt cache hit on follow-ups.
+  // (when present) and any attachment parts so the same prefix lands on every turn →
+  // prompt cache hit on follow-ups.
   const input: ResponseInputItem[] = history.map((m, idx) => {
     if (m.role === "user") {
       const parts: Array<{ type: "input_text"; text: string } | { type: "input_file"; file_id: string }> = [];
-      if (idx === 0 && fileId) parts.push({ type: "input_file", file_id: fileId });
+      if (idx === 0) {
+        if (fileId) parts.push({ type: "input_file", file_id: fileId });
+        if (attachmentParts.length > 0) parts.push(...attachmentParts);
+      }
       parts.push({ type: "input_text", text: m.content });
       return { role: "user", content: parts };
     }

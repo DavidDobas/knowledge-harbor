@@ -28,10 +28,15 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const { sourceId, title, context, origin, chunkOffset, pdfPage, pdfHighlightText, pdfHighlightRects, includeFile, includeWeb } = await req.json();
+  const { sourceId, title, context, origin, chunkOffset, pdfPage, pdfHighlightText, pdfHighlightRects, includeFile, includeWeb, attachedSourceIds } = await req.json();
   if (!sourceId || !title) return NextResponse.json({ error: "sourceId and title required" }, { status: 400 });
 
   const resolvedOrigin = origin === "general" ? "general" : "passage";
+
+  // JSON-encoded array of source IDs attached as extra context. Empty/missing → null.
+  const attachedJson = Array.isArray(attachedSourceIds) && attachedSourceIds.length > 0
+    ? JSON.stringify(attachedSourceIds.filter((x: unknown): x is string => typeof x === "string"))
+    : null;
 
   // Insert immediately with the raw question as the title so the chat can start without
   // waiting on the LLM. A representative title is generated in the background (see below).
@@ -45,6 +50,7 @@ export async function POST(req: NextRequest) {
     pdfHighlightRects: pdfHighlightRects ?? null,
     includeFile: includeFile !== false,
     includeWeb: includeWeb === true,
+    attachedSourceIds: attachedJson,
   }).returning();
 
   // Generate a concise, representative node title (from the question + its context) after the

@@ -5,7 +5,10 @@ import WebSearchToggle from "@/components/source/WebSearchToggle";
 import ChatInput from "@/components/ui/ChatInput";
 import FileChip from "@/components/ui/FileChip";
 import PassageQuote from "@/components/ui/PassageQuote";
+import SourcePicker from "@/components/panels/SourcePicker";
+import SourceTypeIcon from "@/components/ui/SourceTypeIcon";
 import { createQuestion } from "@/lib/questions";
+import type { Source } from "@/lib/types";
 
 interface Props {
   selectedText: string;
@@ -27,6 +30,9 @@ export default function PDFSelectionPanel({ selectedText, page, rects, sourceId,
   // Per-thread web search: opt-in. Adds the hosted web_search tool to the Responses call
   // so the model can fetch and cite external sources. Persisted on the question row.
   const [includeWeb, setIncludeWeb] = useState(false);
+  // Additional sources attached to this thread. Stored locally as full Source objects so
+  // we can render the title/type on chips; only IDs go to the server.
+  const [attached, setAttached] = useState<Source[]>([]);
 
   async function submit() {
     if (!input.trim() || creating) return;
@@ -41,6 +47,7 @@ export default function PDFSelectionPanel({ selectedText, page, rects, sourceId,
       pdfHighlightRects: JSON.stringify(rects),
       includeFile,
       includeWeb,
+      attachedSourceIds: attached.map((s) => s.id),
     });
     if (!created) { setCreating(false); return; }
     onGraphRefresh();
@@ -74,7 +81,33 @@ export default function PDFSelectionPanel({ selectedText, page, rects, sourceId,
           {includeFile && (
             <FileChip title={sourceTitle} onRemove={() => setIncludeFile(false)} maxWidth={200} />
           )}
+          {attached.map((s) => (
+            <div
+              key={s.id}
+              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border"
+              style={{ background: "var(--accent-light)", borderColor: "color-mix(in srgb, var(--accent) 25%, transparent)" }}
+            >
+              <SourceTypeIcon type={s.type} compact />
+              <span className="type-mono truncate" style={{ fontSize: "0.7rem", color: "var(--accent)", maxWidth: 160 }} title={s.title}>
+                {s.title}
+              </span>
+              <button
+                type="button"
+                onClick={() => setAttached((prev) => prev.filter((p) => p.id !== s.id))}
+                disabled={creating}
+                className="ml-0.5 hover:opacity-60 transition-opacity"
+                style={{ color: "var(--accent)", fontSize: "0.85rem", lineHeight: 1 }}
+                title="Remove attached source"
+              >
+                ×
+              </button>
+            </div>
+          ))}
           <WebSearchToggle enabled={includeWeb} onChange={setIncludeWeb} disabled={creating} />
+          <SourcePicker
+            excludeIds={[sourceId, ...attached.map((s) => s.id)]}
+            onPick={(s) => setAttached((prev) => (prev.some((p) => p.id === s.id) ? prev : [...prev, s]))}
+          />
         </div>
         <ChatInput
           value={input}

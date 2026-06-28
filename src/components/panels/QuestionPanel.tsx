@@ -6,6 +6,8 @@ import ChatInput from "@/components/ui/ChatInput";
 import EditableTitle from "@/components/ui/EditableTitle";
 import FileChip from "@/components/ui/FileChip";
 import PassageQuote from "@/components/ui/PassageQuote";
+import SourcePicker from "@/components/panels/SourcePicker";
+import SourceTypeIcon from "@/components/ui/SourceTypeIcon";
 import { ChatMessage, StreamingMessage } from "@/components/source/ChatMessage";
 import { fetchJson } from "@/lib/fetchJson";
 import { patchQuestion } from "@/lib/questions";
@@ -38,6 +40,10 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
   const [summarizing, setSummarizing] = useState(false);
   const [streamBuffer, setStreamBuffer] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
+  // Hydrated Source rows for each attached source ID on the question. Loaded after
+  // `question` arrives so we can render titles/types on chips without an extra fetch
+  // per chip. Null while not yet loaded → chips area falls back to nothing.
+  const [attachedSources, setAttachedSources] = useState<Source[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true); // whether the view is stuck to the bottom
@@ -148,9 +154,39 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
     return true;
   }
 
-  async function patchThreadSettings(patch: { includeWeb?: boolean; includeFile?: boolean }) {
+  async function patchThreadSettings(patch: { includeWeb?: boolean; includeFile?: boolean; attachedSourceIds?: string[] }) {
     const updated = await patchQuestion(questionId, patch);
     if (updated) setQuestion(updated);
+  }
+
+  // When the attached-source-ids list changes (on mount or after a PATCH), resolve the
+  // referenced source rows so the chips can show titles. /api/sources returns the whole
+  // library cheaply; we filter client-side. Empty list short-circuits to no fetch.
+  useEffect(() => {
+    if (!question?.attachedSourceIds) { setAttachedSources([]); return; }
+    let ids: string[] = [];
+    try {
+      const parsed = JSON.parse(question.attachedSourceIds);
+      if (Array.isArray(parsed)) ids = parsed.filter((x): x is string => typeof x === "string");
+    } catch { /* malformed → treat as empty */ }
+    if (ids.length === 0) { setAttachedSources([]); return; }
+    fetchJson<Source[]>("/api/sources").then((all) => {
+      if (!all) { setAttachedSources([]); return; }
+      const byId = new Map(all.map((s) => [s.id, s]));
+      setAttachedSources(ids.map((id) => byId.get(id)).filter((s): s is Source => !!s));
+    });
+  }, [question?.attachedSourceIds]);
+
+  async function addAttachment(s: Source) {
+    if (!question) return;
+    const current = attachedSources.map((a) => a.id);
+    if (current.includes(s.id)) return;
+    await patchThreadSettings({ attachedSourceIds: [...current, s.id] });
+  }
+  async function removeAttachment(id: string) {
+    if (!question) return;
+    const next = attachedSources.filter((a) => a.id !== id).map((a) => a.id);
+    await patchThreadSettings({ attachedSourceIds: next });
   }
 
   // Prefer the canonical row once it's loaded; fall back to the props handed in from
@@ -229,11 +265,39 @@ export default function QuestionPanel({ questionId, onSummarized, onGraphRefresh
               + Attach PDF
             </button>
           )}
+          {attachedSources.map((s) => (
+            <div
+              key={s.id}
+              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border"
+              style={{ background: "var(--accent-light)", borderColor: "color-mix(in srgb, var(--accent) 25%, transparent)" }}
+            >
+              <SourceTypeIcon type={s.type} compact />
+              <span className="type-mono truncate" style={{ fontSize: "0.7rem", color: "var(--accent)", maxWidth: 180 }} title={s.title}>
+                {s.title}
+              </span>
+              <button
+                type="button"
+                onClick={() => removeAttachment(s.id)}
+                disabled={streaming}
+                className="ml-0.5 hover:opacity-60 transition-opacity"
+                style={{ color: "var(--accent)", fontSize: "0.85rem", lineHeight: 1 }}
+                title="Remove attached source"
+              >
+                ×
+              </button>
+            </div>
+          ))}
           {question && (
             <WebSearchToggle
               enabled={question.includeWeb}
               onChange={(v) => patchThreadSettings({ includeWeb: v })}
               disabled={streaming}
+            />
+          )}
+          {question && source && (
+            <SourcePicker
+              excludeIds={[source.id, ...attachedSources.map((a) => a.id)]}
+              onPick={addAttachment}
             />
           )}
         </div>
